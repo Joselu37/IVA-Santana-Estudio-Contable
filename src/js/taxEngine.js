@@ -1,202 +1,187 @@
 /**
- * taxEngine.js
- * Motor de liquidación de IVA (régimen general, Ley de IVA arts. 11-24 y 43).
- *
- * IMPORTANTE — LEER ANTES DE USAR EN UNA DDJJ REAL:
- * Este motor cubre el circuito general (ventas/compras mercado interno,
- * exportaciones a alícuota 0%, importaciones con IVA aduanero). NO contempla
- * regímenes especiales (construcción, financiero, agropecuario, turismo,
- * etc.), prorrateo de crédito fiscal indirecto por destino mixto más allá del
- * slider del simulador, ni la totalidad de percepciones/retenciones vigentes.
- * Es una herramienta de apoyo: el resultado siempre debe ser revisado por un
- * contador antes de presentar la DDJJ.
- *
- * Convención de signos: todos los importes que "restan" al saldo se devuelven
- * en positivo (el valor absoluto); quien renderiza decide mostrarlos entre
- * paréntesis. current el cálculo de la posición final SÍ resta internamente.
+ * Tax Engine for Argentine VAT (IVA) Settlement
+ * Supports Responsables Inscriptos & Sociedades
+ * Handles Mercado Interno, Exportaciones (Art. 43), Importaciones (Despachos SIM / RG 5339),
+ * Prorrateo Art. 13, and Saldos Art. 24.
  */
-(function () {
-  'use strict';
 
-  const ALICUOTAS_VALIDAS = [21, 10.5, 27, 0];
-
-  function round2(n) {
-    return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-  }
-
-  function esMonotributo(condicionIVA) {
-    return /monotribut/i.test(condicionIVA || '');
-  }
-
-  function esExento(condicionIVA) {
-    return /exent/i.test(condicionIVA || '');
-  }
-
+window.TaxEngine = (function() {
   /**
-   * Filtra comprobantes de un contribuyente al período fiscal (YYYY-MM) indicado.
+   * Calculates full VAT status given a list of comprobantes and taxpayer parameters.
+   * @param {Array} comprobantes - List of invoices/despachos
+   * @param {Object} params - { stAnterior, sldAnterior, prorrateoPct, incluirImpo, incluirPercepAduaneras, solicitarArt43 }
    */
-  function filtrarPorPeriodo(comprobantes, periodoYYYYMM) {
-    if (!periodoYYYYMM) return comprobantes;
-    return comprobantes.filter((c) => (c.fecha || '').slice(0, 7) === periodoYYYYMM);
-  }
+  function calculateIVA(comprobantes, params = {}) {
+    const prorrateoPct = (params.prorrateoPct !== undefined ? params.prorrateoPct : 100) / 100;
+    const stAnterior = parseFloat(params.stAnterior) || 0;
+    const sldAnterior = parseFloat(params.sldAnterior) || 0;
+    const incluirImpo = params.incluirImpo !== false;
+    const incluirPercepAduaneras = params.incluirPercepAduaneras !== false;
+    const solicitarArt43 = params.solicitarArt43 !== false;
 
-  /**
-   * Agrupa un array de comprobantes de venta/compra por alícuota, sumando neto e IVA.
-   */
-  function agruparPorAlicuota(comprobantes) {
-    const grupos = {};
-    for (const c of comprobantes) {
-      const alic = Number(c.alicuota);
-      if (!grupos[alic]) grupos[alic] = { alicuota: alic, neto: 0, iva: 0, cantidad: 0 };
-      grupos[alic].neto += Number(c.neto) || 0;
-      grupos[alic].iva += (Number(c.neto) || 0) * alic / 100;
-      grupos[alic].cantidad += 1;
+    // Totales Débito Fiscal (Ventas)
+    let dfTotal = 0;
+    let dfNetoTotal = 0;
+    let dfPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
+    let dfNetoPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
+    
+    // Ventas Exportación (Factura E)
+    let expoNetoTotal = 0;
+
+    // Totales Crédito Fiscal (Compras)
+    let cfTotalBruto = 0;
+    let cfNetoTotal = 0;
+    let cfPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
+    let cfNetoPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
+
+    // Importaciones (Despachos Aduana)
+    let impoNetoTotal = 0;
+    let impoIVATotal = 0;
+    let percepAduanerasTotal = 0; // RG 5339 / RG 2281
+
+    // Retenciones & Percepciones Sufrientes (Locales)
+    let retencionesLocales = 0;
+    let percepcionesLocales = 0;
+
+    // Iterar comprobantes
+    comprobantes.forEach(comp => {
+      const neto = parseFloat(comp.neto) || 0;
+      const alicuota = parseFloat(comp.alicuota) || 0;
+      const retPercep = parseFloat(comp.retenciones) || 0;
+      const esAduanera = comp.esAduanera === 'si' || comp.esAduanera === true;
+
+      // 1. VENTAS
+      if (comp.tipoOp === 'venta') {
+        dfNetoTotal += neto;
+        const dfComp = (neto * alicuota) / 100;
+        dfTotal += dfComp;
+
+        if (dfPorAlicuota[alicuota] !== undefined) {
+          dfPorAlicuota[alicuota] += dfComp;
+          dfNetoPorAlicuota[alicuota] += neto;
+        }
+      } 
+      // 2. EXPORTACIONES (Factura E)
+      else if (comp.tipoOp === 'exportacion') {
+        expoNetoTotal += neto;
+        // Alícuota 0% en exportación
+      }
+      // 3. COMPRAS LOCALES
+      else if (comp.tipoOp === 'compra') {
+        cfNetoTotal += neto;
+        const cfComp = (neto * alicuota) / 100;
+        cfTotalBruto += cfComp;
+
+        if (cfPorAlicuota[alicuota] !== undefined) {
+          cfPorAlicuota[alicuota] += cfComp;
+          cfNetoPorAlicuota[alicuota] += neto;
+        }
+
+        if (retPercep > 0) {
+          percepcionesLocales += retPercep;
+        }
+      }
+      // 4. DESPACHOS DE IMPORTACIÓN (Aduana)
+      else if (comp.tipoOp === 'importacion') {
+        if (incluirImpo) {
+          impoNetoTotal += neto;
+          const impoIVA = (neto * alicuota) / 100;
+          impoIVATotal += impoIVA;
+          cfNetoTotal += neto;
+        }
+        if (retPercep > 0) {
+          if (esAduanera) {
+            if (incluirPercepAduaneras) {
+              percepAduanerasTotal += retPercep;
+            }
+          } else {
+            percepcionesLocales += retPercep;
+          }
+        }
+      }
+    });
+
+    // Cómputo Crédito Fiscal con Prorrateo Art. 13
+    const cfComputableLocales = cfTotalBruto * prorrateoPct;
+    const cfComputableTotal = cfComputableLocales + (incluirImpo ? impoIVATotal : 0);
+
+    // Recupero de IVA Exportador (Art. 43)
+    // El crédito fiscal vinculado a exportación se calcula según proporción de exportaciones sobre ventas totales
+    const ventasTotales = dfNetoTotal + expoNetoTotal;
+    let coefExportacion = 0;
+    if (ventasTotales > 0) {
+      coefExportacion = expoNetoTotal / ventasTotales;
     }
-    return Object.values(grupos).sort((a, b) => b.alicuota - a.alicuota);
-  }
+    const cfVinculadoExportacion = solicitarArt43 ? (cfComputableTotal * coefExportacion) : 0;
 
-  /**
-   * Calcula la liquidación completa de un período para un contribuyente.
-   *
-   * @param {Object} params
-   * @param {Array} params.comprobantes - todos los comprobantes cargados (de fuente 'sistema', ya filtrados de duplicados si corresponde)
-   * @param {String} params.periodo - 'YYYY-MM'
-   * @param {String} params.condicionIVA - condición del contribuyente (para gating de Monotributo)
-   * @param {Number} params.saldoTecnicoAnterior - Art. 24, 1er párrafo
-   * @param {Number} params.saldoLibreDisponibilidadAnterior - Art. 24, 2do párrafo
-   * @param {Object} params.opciones - toggles del simulador
-   * @param {Number} params.opciones.prorrateoPct - 0-100, % de CF general computable
-   * @param {Boolean} params.opciones.incluirImportaciones
-   * @param {Boolean} params.opciones.incluirPercepcionesAduaneras
-   * @param {Boolean} params.opciones.solicitarArt43
-   */
-  function liquidar({
-    comprobantes,
-    periodo,
-    condicionIVA,
-    saldoTecnicoAnterior = 0,
-    saldoLibreDisponibilidadAnterior = 0,
-    opciones = {}
-  }) {
-    const {
-      prorrateoPct = 100,
-      incluirImportaciones = true,
-      incluirPercepcionesAduaneras = true,
-      solicitarArt43 = true
-    } = opciones;
+    // Subtotal Débito vs Crédito
+    const subtotalDebitoCredito = dfTotal - cfComputableTotal;
 
-    if (esMonotributo(condicionIVA)) {
-      return {
-        aplica: false,
-        motivo: 'El contribuyente es Responsable Monotributo: no liquida IVA (Anexo Ley 24.977).',
-        periodo
-      };
+    // Determinación de Saldo Técnico (1er Párrafo Art. 24)
+    // Débito - Crédito - Saldo Técnico Anterior
+    let saldoTecnicoNeto = subtotalDebitoCredito - stAnterior;
+    let saldoTecnicoResultante = 0;
+    let remanenteADisponer = 0;
+
+    if (saldoTecnicoNeto < 0) {
+      // Saldo Técnico a Favor del Contribuyente
+      saldoTecnicoResultante = Math.abs(saldoTecnicoNeto);
+      remanenteADisponer = 0;
+    } else {
+      // Impuesto a favor del Fisco antes de pagos a cuenta / SLD
+      saldoTecnicoResultante = 0;
+      remanenteADisponer = saldoTecnicoNeto;
     }
 
-    const delPeriodo = filtrarPorPeriodo(
-      comprobantes.filter((c) => c.fuente !== 'arca'), // solo libros propios, no lo importado como "oficial" para conciliar
-      periodo
-    );
+    // Retenciones y Percepciones totales
+    const totalPagosACuenta = retencionesLocales + percepcionesLocales + percepAduanerasTotal + sldAnterior;
 
-    const ventas = delPeriodo.filter((c) => c.tipoOperacion === 'venta');
-    const exportaciones = delPeriodo.filter((c) => c.tipoOperacion === 'exportacion');
-    const compras = delPeriodo.filter((c) => c.tipoOperacion === 'compra');
-    const importaciones = delPeriodo.filter((c) => c.tipoOperacion === 'importacion');
+    // Posición Definitiva (2do Párrafo Art. 24)
+    let impuestoAPagar = 0;
+    let saldoLibreDisponibilidadResultante = 0;
 
-    // --- 1. DÉBITO FISCAL ---
-    const dfPorAlicuota = agruparPorAlicuota(ventas);
-    const debitoFiscal = round2(dfPorAlicuota.reduce((acc, g) => acc + g.iva, 0));
-    const montoExportaciones = round2(exportaciones.reduce((acc, c) => acc + (Number(c.neto) || 0), 0));
-    const montoVentasGravadas = round2(ventas.reduce((acc, c) => acc + (Number(c.neto) || 0), 0));
-
-    // --- 2. CRÉDITO FISCAL ---
-    // CF directamente vinculado a exportación (marcado manualmente por el usuario, Art. 43)
-    const comprasVinculadasExpo = compras.filter((c) => c.vinculadoExportacion);
-    const comprasGenerales = compras.filter((c) => !c.vinculadoExportacion);
-    const impoVinculadasExpo = importaciones.filter((c) => c.vinculadoExportacion);
-    const impoGenerales = importaciones.filter((c) => !c.vinculadoExportacion);
-
-    const cfVinculadoExpoDirecto = round2(
-      [...comprasVinculadasExpo, ...impoVinculadasExpo].reduce(
-        (acc, c) => acc + (Number(c.neto) || 0) * (Number(c.alicuota) || 0) / 100,
-        0
-      )
-    );
-
-    const cfComprasGenerales = round2(
-      comprasGenerales.reduce((acc, c) => acc + (Number(c.neto) || 0) * (Number(c.alicuota) || 0) / 100, 0)
-    );
-    const cfImportacionesGenerales = incluirImportaciones
-      ? round2(impoGenerales.reduce((acc, c) => acc + (Number(c.neto) || 0) * (Number(c.alicuota) || 0) / 100, 0))
-      : 0;
-
-    // El prorrateo del simulador (Art. 13) se aplica sobre el CF general no vinculado
-    // directamente a un destino (gravado local vs. exportación). El CF vinculado
-    // directo a exportación (marcado por el usuario) SIEMPRE es 100% computable,
-    // ya que es Art. 43, no está sujeto al prorrateo del Art. 13.
-    const factorProrrateo = Math.max(0, Math.min(100, Number(prorrateoPct))) / 100;
-    const cfGeneralComputable = round2((cfComprasGenerales + cfImportacionesGenerales) * factorProrrateo);
-
-    const creditoFiscalComputable = round2(cfGeneralComputable + (solicitarArt43 ? cfVinculadoExpoDirecto : 0));
-
-    const cfPorAlicuotaCompras = agruparPorAlicuota(comprasGenerales);
-    const cfPorAlicuotaImpo = incluirImportaciones ? agruparPorAlicuota(impoGenerales) : [];
-
-    // --- 3. PERCEPCIONES / RETENCIONES ---
-    const percepcionesAduaneras = incluirPercepcionesAduaneras
-      ? round2(importaciones.filter((c) => c.esPercepcionAduanera)
-          .reduce((acc, c) => acc + (Number(c.retencionesPercepciones) || 0), 0))
-      : 0;
-
-    const retencionesPercepcionesLocales = round2(
-      [...ventas, ...compras, ...exportaciones]
-        .reduce((acc, c) => acc + (Number(c.retencionesPercepciones) || 0), 0)
-    );
-
-    // --- 4. DETERMINACIÓN DEL SALDO (Art. 24) ---
-    const subtotal = round2(debitoFiscal - creditoFiscalComputable);
-    const saldoTecnicoResultante = round2(subtotal - Number(saldoTecnicoAnterior || 0));
-
-    // El saldo técnico (1er párrafo) solo se "usa" para pagar si es positivo (a favor
-    // del fisco). Si es negativo, es saldo a favor del contribuyente y se traslada
-    // como saldoTecnicoAnterior del próximo período (no compensa retenciones/percepciones).
-    const baseParaDescuentos = Math.max(0, saldoTecnicoResultante);
-
-    const posicionFinal = round2(
-      baseParaDescuentos
-      - retencionesPercepcionesLocales
-      - percepcionesAduaneras
-      - Number(saldoLibreDisponibilidadAnterior || 0)
-    );
+    if (remanenteADisponer > 0) {
+      const netFinal = remanenteADisponer - totalPagosACuenta;
+      if (netFinal > 0) {
+        impuestoAPagar = netFinal;
+        saldoLibreDisponibilidadResultante = 0;
+      } else {
+        impuestoAPagar = 0;
+        saldoLibreDisponibilidadResultante = Math.abs(netFinal);
+      }
+    } else {
+      // El remanente a disponer era 0 (había Saldo Técnico a favor), por lo que todos los pagos a cuenta quedan como Saldo de Libre Disponibilidad
+      impuestoAPagar = 0;
+      saldoLibreDisponibilidadResultante = totalPagosACuenta;
+    }
 
     return {
-      aplica: true,
-      periodo,
-      debitoFiscal,
+      dfTotal,
+      dfNetoTotal,
       dfPorAlicuota,
-      montoExportaciones,
-      montoVentasGravadas,
-      creditoFiscalComputable,
-      cfComprasGenerales,
-      cfImportacionesGenerales,
-      cfGeneralComputable,
-      cfVinculadoExpoDirecto,
-      cfPorAlicuotaCompras,
-      cfPorAlicuotaImpo,
-      percepcionesAduaneras,
-      retencionesPercepcionesLocales,
-      subtotal,
-      saldoTecnicoAnterior: round2(Number(saldoTecnicoAnterior || 0)),
+      dfNetoPorAlicuota,
+      expoNetoTotal,
+      cfTotalBruto,
+      cfNetoTotal,
+      cfComputableTotal,
+      cfVinculadoExportacion,
+      coefExportacion,
+      impoNetoTotal,
+      impoIVATotal,
+      percepAduanerasTotal,
+      retencionesLocales,
+      percepcionesLocales,
+      subtotalDebitoCredito,
+      stAnterior,
       saldoTecnicoResultante,
-      saldoLibreDisponibilidadAnterior: round2(Number(saldoLibreDisponibilidadAnterior || 0)),
-      posicionFinal,
-      esAFavor: posicionFinal < 0,
-      cantidadComprobantes: delPeriodo.length,
-      cantidadVentas: ventas.length,
-      cantidadCompras: compras.length + importaciones.length,
-      cantidadExportaciones: exportaciones.length
+      sldAnterior,
+      totalPagosACuenta,
+      impuestoAPagar,
+      saldoLibreDisponibilidadResultante
     };
   }
 
-  window.TaxEngine = { liquidar, agruparPorAlicuota, filtrarPorPeriodo, esMonotributo, esExento, round2, ALICUOTAS_VALIDAS };
+  return {
+    calculateIVA
+  };
 })();

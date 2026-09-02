@@ -26,7 +26,7 @@
 
       <div class="contribuyente-selector">
         <div class="cuit-search-quick">
-          <input type="text" id="quick-cuit-input" placeholder="Ingrese CUIT sin guiones (ej. 30714589629)..." class="input-cuit-quick">
+          <input type="text" id="quick-cuit-input" placeholder="Ingrese CUIT sin guiones (ej. 30500010912)..." class="input-cuit-quick">
           <button id="btn-quick-buscar-cuit" class="btn btn-primary btn-sm" title="Consultar Padrón ARCA">
             <i class="ri-search-eye-line"></i> Buscar CUIT en ARCA
           </button>
@@ -36,14 +36,20 @@
           <i class="ri-building-4-line"></i>
           <div class="cuit-info">
             <span id="header-razon-social" class="razon-social">LOGÍSTICA & IMPEX S.A.</span>
-            <span id="header-cuit" class="cuit-num">CUIT: 30-71458962-9 | Resp. Inscripto</span>
+            <span id="header-cuit" class="cuit-num">CUIT: 30-50001091-2 | Resp. Inscripto</span>
           </div>
         </div>
+        <select id="select-contribuyente-guardado" class="select-filter" title="Cambiar de contribuyente">
+          <option value="">Cambiar contribuyente guardado...</option>
+        </select>
         <button id="btn-config-contribuyente" class="btn btn-outline btn-sm">
           <i class="ri-settings-4-line"></i> Ajustar Período / Saldos
         </button>
       </div>
     </header>
+
+    <!-- ALERTA CONDICIÓN IVA (ej. Monotributo no liquida IVA) -->
+    <div id="alerta-condicion-iva" class="condicion-alert hidden"></div>
 
     <!-- LIVE TAX CONDITION BANNER (En Tiempo Real) -->
     <section class="live-condition-bar">
@@ -110,6 +116,13 @@
             </div>
             <button id="btn-dropzone-select" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
             <button id="btn-pegar-texto" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto / Excel</button>
+            <div class="form-group" style="max-width:340px; margin:0.75rem auto 0;">
+              <label style="font-size:0.8rem;">¿Qué es lo que estás por importar?</label>
+              <select id="select-fuente-import" class="select-filter">
+                <option value="sistema">Mis registros propios (libros del contribuyente)</option>
+                <option value="arca">Archivo oficial descargado de ARCA (para conciliar en la pestaña 2)</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -130,6 +143,14 @@
             <button id="btn-cargar-demo" class="btn btn-outline">
               <i class="ri-magic-line"></i> Cargar Caso Demo
             </button>
+            <span class="toolbar-divider"></span>
+            <button id="btn-backup-descargar" class="btn btn-outline" title="Descarga un .json con todos los datos de este contribuyente para guardarlo como respaldo">
+              <i class="ri-download-2-line"></i> Descargar Backup (.json)
+            </button>
+            <button id="btn-backup-restaurar" class="btn btn-outline" title="Restaura los comprobantes desde un archivo de backup descargado antes">
+              <i class="ri-upload-2-line"></i> Restaurar Backup
+            </button>
+            <input type="file" id="input-backup-restaurar" accept=".json" style="display:none">
           </div>
           <div class="search-group">
             <input type="text" id="filter-search" placeholder="Buscar por CUIT, Razón Social o N° Factura..." class="input-search">
@@ -321,7 +342,7 @@
             <h2>PAPEL DE TRABAJO - LIQUIDACIÓN DE IVA</h2>
             <div class="wp-meta">
               <div><strong>Contribuyente:</strong> <span id="wp-razon">LOGÍSTICA & IMPEX S.A.</span></div>
-              <div><strong>CUIT:</strong> <span id="wp-cuit">30-71458962-9</span></div>
+              <div><strong>CUIT:</strong> <span id="wp-cuit">30-50001091-2</span></div>
               <div><strong>Período Fiscal:</strong> <span id="wp-periodo">Agosto 2026</span></div>
               <div><strong>Fecha Emisión:</strong> <span id="wp-fecha-hoy">16/08/2026</span></div>
             </div>
@@ -558,6 +579,15 @@
               <option value="si">Sí (Aduanera 20%/10%)</option>
             </select>
           </div>
+
+          <div class="form-group" id="grupo-vinculado-expo" style="display:none;">
+            <label for="comp-vinculado-expo">¿Compra vinculada directamente a Exportación (Art. 43)?</label>
+            <select id="comp-vinculado-expo">
+              <option value="no">No (destino mercado interno / uso general)</option>
+              <option value="si">Sí (crédito fiscal recuperable por Art. 43)</option>
+            </select>
+            <small>Marcá "Sí" solo si esta compra/insumo se destinó específicamente a producir los bienes/servicios exportados.</small>
+          </div>
         </div>
 
         <div class="modal-footer">
@@ -579,13 +609,33 @@
         <div class="form-group">
           <label>CUIT Contribuyente</label>
           <div style="display:flex; gap:0.5rem;">
-            <input type="text" id="cfg-cuit" value="30-71458962-9" required style="flex:1;">
+            <input type="text" id="cfg-cuit" value="30-50001091-2" required style="flex:1;">
             <button type="button" id="btn-cfg-buscar-padron" class="btn btn-primary btn-sm"><i class="ri-search-line"></i> Consultar ARCA</button>
           </div>
         </div>
         <div class="form-group">
           <label>Razón Social / Nombre</label>
           <input type="text" id="cfg-razon" value="LOGÍSTICA & IMPEX S.A." required>
+        </div>
+        <div class="form-group">
+          <label>Tipo de Persona</label>
+          <select id="cfg-tipo-persona">
+            <option value="JURIDICA">Persona Jurídica</option>
+            <option value="FISICA">Persona Humana</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Condición frente al IVA</label>
+          <select id="cfg-condicion-iva">
+            <option value="IVA Responsable Inscripto">IVA Responsable Inscripto</option>
+            <option value="Responsable Monotributo">Responsable Monotributo (no liquida IVA)</option>
+            <option value="IVA Sujeto Exento">IVA Sujeto Exento</option>
+          </select>
+          <small>Se autocompleta al consultar ARCA. Si es Monotributo, el liquidador no calcula IVA para este contribuyente.</small>
+        </div>
+        <div class="form-group">
+          <label>Período Fiscal a Liquidar</label>
+          <input type="month" id="cfg-periodo" required>
         </div>
         <div class="form-group">
           <label>Saldo Técnico del Mes Anterior ($) (1er Párrafo Art. 24)</label>
@@ -684,10 +734,7 @@
   </div>
 
   <!-- Hidden File Input for CSV Upload -->
-  <input type="file" id="input-file-arca" accept=".csv,.txt,.xlsx,.xls" style="display:none">
-
-  <!-- External CDNs: SheetJS for native .xlsx/.xls support -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <input type="file" id="input-file-arca" accept=".csv,.txt" style="display:none">
 
   <!-- JS Modules -->
   <script src="src/js/arcaApi.js"></script>

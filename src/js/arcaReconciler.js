@@ -1,82 +1,136 @@
 /**
- * arcaReconciler.js
- * Cruza los comprobantes cargados como libros propios (fuente: 'sistema') contra
- * los importados como oficiales de ARCA (fuente: 'arca', vía "Mis Comprobantes"
- * exportado a CSV/TXT e importado con el mismo parser).
- *
- * Clave de cruce: tipoOperacion + cuit + numero (normalizado). Si no aparece en
- * ambos lados, se marca "faltante"; si aparece en ambos pero difieren neto/IVA,
- * se marca "diferencia"; si coincide, "ok".
+ * ARCA Reconciler & Matching Engine
+ * Cross-references local accounting vouchers with official ARCA "Mis Comprobantes" records.
  */
-(function () {
-  'use strict';
 
-  function normalizarNumero(numero) {
-    return String(numero || '').replace(/[^0-9-]/g, '');
-  }
-
-  function claveComprobante(c) {
-    return `${c.tipoOperacion}|${c.cuit}|${normalizarNumero(c.numero)}`;
-  }
-
-  function tolerable(a, b) {
-    return Math.abs(Number(a) - Number(b)) <= 0.5; // medio peso de tolerancia por redondeo
-  }
-
+window.ArcaReconciler = (function() {
   /**
-   * @param {Array} comprobantes - todos los comprobantes del contribuyente (ambas fuentes)
-   * @param {String} periodo - 'YYYY-MM', opcional
+   * Reconciles local vouchers list against ARCA downloaded vouchers list.
+   * @param {Array} sistemaVouchers - Vouchers in user system
+   * @param {Array} arcaVouchers - Vouchers downloaded from ARCA
    */
-  function ejecutarCruce(comprobantes, periodo) {
-    const delPeriodo = periodo
-      ? comprobantes.filter((c) => (c.fecha || '').slice(0, 7) === periodo)
-      : comprobantes;
+  function reconcile(sistemaVouchers, arcaVouchers) {
+    const results = [];
+    let okCount = 0;
+    let diffCount = 0;
+    let missingCount = 0;
 
-    const sistema = delPeriodo.filter((c) => c.fuente !== 'arca');
-    const arca = delPeriodo.filter((c) => c.fuente === 'arca');
+    // Helper key generator: CUIT-Tipo-Numero
+    function makeKey(v) {
+      const cuit = (v.cuit || '').replace(/\D/g, '');
+      const num = (v.numero || '').replace(/\D/g, '');
+      const tipo = (v.tipoDoc || '').toLowerCase().trim();
+      return `${cuit}-${tipo}-${num}`;
+    }
 
-    const mapaArca = new Map(arca.map((c) => [claveComprobante(c), c]));
-    const mapaSistema = new Map(sistema.map((c) => [claveComprobante(c), c]));
+    const arcaMap = new Map();
+    arcaVouchers.forEach(v => {
+      arcaMap.set(makeKey(v), v);
+    });
 
-    const filas = [];
-    let ok = 0, diff = 0, missing = 0;
+    const matchedArcaKeys = new Set();
 
-    for (const c of sistema) {
-      const key = claveComprobante(c);
-      const par = mapaArca.get(key);
-      if (!par) {
-        filas.push({
-          comprobante: c, contraparte: null, estado: 'solo_sistema',
-          diagnostico: 'Está en tus libros pero no aparece en el archivo de ARCA importado. Verificá si fue presentado o si falta importar ese período de ARCA.'
-        });
-        missing++;
-        continue;
-      }
-      if (!tolerable(c.neto, par.neto) || Number(c.alicuota) !== Number(par.alicuota)) {
-        filas.push({
-          comprobante: c, contraparte: par, estado: 'diferencia',
-          diagnostico: `Monto o alícuota no coincide: sistema $${c.neto} (${c.alicuota}%) vs ARCA $${par.neto} (${par.alicuota}%). Revisar cuál es el correcto antes de liquidar.`
-        });
-        diff++;
+    // 1. Process all local system vouchers
+    sistemaVouchers.forEach(vSistema => {
+      const key = makeKey(vSistema);
+      const vArca = arcaMap.get(key);
+
+      if (vArca) {
+        matchedArcaKeys.add(key);
+        const montoSystem = (vSistema.neto * (1 + (vSistema.alicuota || 0) / 100)) + (vSistema.retenciones || 0);
+        const montoArca = (vArca.neto * (1 + (vArca.alicuota || 0) / 100)) + (vArca.retenciones || 0);
+
+        const diffMonto = Math.abs(montoSystem - montoArca);
+
+        if (diffMonto < 1.0) {
+          // OK Match
+          okCount++;
+          results.push({
+            status: 'COINCIDE_OK',
+            badgeClass: 'badge-status st-favor',
+            badgeText: '🟢 Coincide 100%',
+            comprobante: `${vSistema.tipoDoc} ${vSistema.numero}`,
+            cuitContraparte: vSistema.cuit,
+            montoSistema: montoSystem,
+            montoArca: montoArca,
+            diferenciaIva: 0,
+            categoria: vSistema.tipoOp,
+            diagnostico: 'Comprobante validado correctamente contra los registros oficiales de ARCA.',
+            vSistema,
+            vArca
+          });
+        } else {
+          // Difference in amount or rate
+          diffCount++;
+          const diffIva = Math.abs(((vSistema.neto * vSistema.alicuota) / 100) - ((vArca.neto * vArca.alicuota) / 100));
+          results.push({
+            status: 'DIFERENCIA_MONTO',
+            badgeClass: 'badge-status st-pagar',
+            badgeText: '🟡 Diferencia de Monto',
+            comprobante: `${vSistema.tipoDoc} ${vSistema.numero}`,
+            cuitContraparte: vSistema.cuit,
+            montoSistema: montoSystem,
+            montoArca: montoArca,
+            diferenciaIva: diffIva,
+            categoria: vSistema.tipoOp,
+            diagnostico: `Diferencia de $${diffMonto.toFixed(2)} detected. Verificar alícuota o tipeo en comprobante.`,
+            vSistema,
+            vArca
+          });
+        }
       } else {
-        filas.push({ comprobante: c, contraparte: par, estado: 'ok', diagnostico: 'Coincide.' });
-        ok++;
-      }
-    }
-
-    for (const c of arca) {
-      const key = claveComprobante(c);
-      if (!mapaSistema.has(key)) {
-        filas.push({
-          comprobante: c, contraparte: null, estado: 'solo_arca',
-          diagnostico: 'Aparece en el archivo de ARCA pero no está cargado en tus libros. Revisá si corresponde cargarlo (podría ser una compra/venta no registrada).'
+        // Missing in ARCA / Solo en Sistema
+        missingCount++;
+        const montoSystem = (vSistema.neto * (1 + (vSistema.alicuota || 0) / 100)) + (vSistema.retenciones || 0);
+        results.push({
+          status: 'SOLO_EN_SISTEMA',
+          badgeClass: 'badge-status st-pagar',
+          badgeText: '🔴 No figura en ARCA',
+          comprobante: `${vSistema.tipoDoc} ${vSistema.numero}`,
+          cuitContraparte: vSistema.cuit,
+          montoSistema: montoSystem,
+          montoArca: 0,
+          diferenciaIva: (vSistema.neto * vSistema.alicuota) / 100,
+          categoria: vSistema.tipoOp,
+          diagnostico: 'Advertencia: Registrado localmente pero ausente en "Mis Comprobantes ARCA". Verificar si fue anulado.',
+          vSistema,
+          vArca: null
         });
-        missing++;
       }
-    }
+    });
 
-    return { filas, stats: { ok, diff, missing } };
+    // 2. Vouchers present only in ARCA
+    arcaVouchers.forEach(vArca => {
+      const key = makeKey(vArca);
+      if (!matchedArcaKeys.has(key)) {
+        missingCount++;
+        const montoArca = (vArca.neto * (1 + (vArca.alicuota || 0) / 100)) + (vArca.retenciones || 0);
+        results.push({
+          status: 'SOLO_EN_ARCA',
+          badgeClass: 'badge-status st-pagar',
+          badgeText: '🔵 Solo en ARCA',
+          comprobante: `${vArca.tipoDoc} ${vArca.numero}`,
+          cuitContraparte: vArca.cuit,
+          montoSistema: 0,
+          montoArca: montoArca,
+          diferenciaIva: (vArca.neto * vArca.alicuota) / 100,
+          categoria: vArca.tipoOp,
+          diagnostico: 'Comprobante emitido/recibido en ARCA no ingresado aún al libro IVA local. Presionar "+" para incorporar.',
+          vSistema: null,
+          vArca
+        });
+      }
+    });
+
+    return {
+      results,
+      okCount,
+      diffCount,
+      missingCount
+    };
   }
 
-  window.ArcaReconciler = { ejecutarCruce, claveComprobante };
+  return {
+    reconcile
+  };
 })();

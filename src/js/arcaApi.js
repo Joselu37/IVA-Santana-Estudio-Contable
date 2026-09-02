@@ -1,112 +1,109 @@
-/**
- * arcaApi.js
- * Conecta los botones "Buscar CUIT en ARCA" / "Consultar ARCA" del index.html
- * con el endpoint del backend (/api/padron/:cuit), que a su vez habla con
- * el webservice de Padrón A13 de ARCA (WSAA + ws_sr_padron_a13).
- *
- * Expone window.ArcaApi.consultarCuit(cuit) para que taxEngine.js / app.js
- * puedan reusarlo al procesar comprobantes.
- */
-(function () {
-  'use strict';
+document.addEventListener('DOMContentLoaded', () => {
+  // 1. Identificar los elementos del DOM de la barra rápida y configuración
+  const btnQuickSearch = document.getElementById('btn-quick-buscar-cuit');
+  const inputQuickCuit = document.getElementById('quick-cuit-input');
+  
+  const btnConfigSearch = document.getElementById('btn-cfg-buscar-padron');
+  const inputConfigCuit = document.getElementById('cfg-cuit');
 
-  function limpiarCuit(cuit) {
-    return String(cuit || '').replace(/[^0-9]/g, '');
-  }
+  // 2. Función principal de consulta
+  async function consultarPadronARCA(cuitBruto) {
+    // Limpiar el CUIT de guiones y espacios
+    const cuit = cuitBruto.replace(/\D/g, '');
 
-  async function consultarCuit(cuit, cuitRepresentada) {
-    const cuitLimpio = limpiarCuit(cuit);
-    if (cuitLimpio.length !== 11) {
-      throw new Error('El CUIT debe tener 11 dígitos.');
-    }
-
-    // cuitRepresentada = a nombre de qué cliente del estudio se hace la consulta
-    // (el CUIT que autorizó al estudio como apoderado del servicio de Padrón).
-    // Si no se pasa, el backend asume que se representa a sí mismo (cuitLimpio).
-    const qs = cuitRepresentada ? `?representada=${limpiarCuit(cuitRepresentada)}` : '';
-    const resp = await fetch(`/api/padron/${cuitLimpio}${qs}`);
-    const data = await resp.json();
-
-    if (!resp.ok) {
-      throw new Error(data.error || `Error consultando ARCA (HTTP ${resp.status})`);
-    }
-    return data.persona;
-  }
-
-  function formatCuit(cuit) {
-    const c = limpiarCuit(cuit);
-    if (c.length !== 11) return cuit;
-    return `${c.slice(0, 2)}-${c.slice(2, 10)}-${c.slice(10)}`;
-  }
-
-  function setLoading(button, loading) {
-    if (!button) return;
-    button.disabled = loading;
-    button.dataset.originalHtml = button.dataset.originalHtml || button.innerHTML;
-    button.innerHTML = loading
-      ? '<i class="ri-loader-4-line ri-spin"></i> Consultando ARCA...'
-      : button.dataset.originalHtml;
-  }
-
-  function mostrarError(mensaje) {
-    // Reemplazar por el sistema de notificaciones del liquidador si existe (app.js / toast, etc.)
-    if (window.mostrarToast) {
-      window.mostrarToast(mensaje, 'error');
-    } else {
-      alert(mensaje);
-    }
-  }
-
-  function actualizarHeaderYConfig(persona) {
-    const razonHeader = document.getElementById('header-razon-social');
-    const cuitHeader = document.getElementById('header-cuit');
-    const razonCfg = document.getElementById('cfg-razon');
-    const cuitCfg = document.getElementById('cfg-cuit');
-
-    if (razonHeader) razonHeader.textContent = persona.razonSocial || '(sin razón social)';
-    if (cuitHeader) {
-      cuitHeader.textContent = `CUIT: ${formatCuit(persona.cuit)} | ${persona.condicionIVA}`;
-    }
-    if (razonCfg) razonCfg.value = persona.razonSocial || '';
-    if (cuitCfg) cuitCfg.value = formatCuit(persona.cuit);
-
-    // Otros módulos (taxEngine.js, app.js) pueden escuchar este evento para
-    // ajustar cómo se liquida el IVA según la condición del contribuyente
-    // (Resp. Inscripto / Monotributo / Exento, etc.)
-    document.dispatchEvent(new CustomEvent('arca:persona-actualizada', { detail: persona }));
-  }
-
-  async function onBuscarClick(inputEl, buttonEl) {
-    const cuit = inputEl ? inputEl.value : null;
-    if (!cuit) {
-      mostrarError('Ingresá un CUIT para consultar.');
+    if (cuit.length !== 11) {
+      alert("Por favor, ingrese un CUIT válido de 11 dígitos.");
       return;
     }
 
-    setLoading(buttonEl, true);
     try {
-      const persona = await consultarCuit(cuit);
-      actualizarHeaderYConfig(persona);
-    } catch (e) {
-      mostrarError(e.message);
-    } finally {
-      setLoading(buttonEl, false);
+      // AQUÍ IRÍA EL FETCH A TU BACKEND (Ej: Node.js) QUE SE CONECTA A AFIP
+      // const response = await fetch(`/api/arca/padron/${cuit}`);
+      // const data = await response.json();
+
+      // MOCK: Simulador de respuesta de API para que la app sea funcional ahora mismo
+      const data = simularLlamadaAPI(cuit);
+
+      // 3. LA VALIDACIÓN SOLICITADA:
+      // Validar que sea Responsable Inscripto o una Sociedad (Ej: Tipo Jurídica)
+      const esResponsableInscripto = data.impuestos.includes('IVA');
+      const esSociedad = data.tipoPersona === 'Jurídica';
+
+      if (!esResponsableInscripto && !esSociedad) {
+        // Mensaje de error si no cumple la condición
+        alert("El contribuyente no está registrado en el impuesto o no es una sociedad válida para esta liquidación.");
+        return; // Cortar la ejecución aquí
+      }
+
+      // 4. Actualizar la interfaz (UI) si la validación es exitosa[cite: 3]
+      // Topbar
+      document.getElementById('header-razon-social').innerText = data.razonSocial;
+      document.getElementById('header-cuit').innerText = `CUIT: ${data.cuitFormateado} | Resp. Inscripto`;
+      
+      // Modal de Configuración
+      document.getElementById('cfg-razon').value = data.razonSocial;
+      document.getElementById('cfg-cuit').value = data.cuitFormateado;
+      
+      // Papeles de Trabajo
+      const wpRazon = document.getElementById('wp-razon');
+      const wpCuit = document.getElementById('wp-cuit');
+      if (wpRazon) wpRazon.innerText = data.razonSocial;
+      if (wpCuit) wpCuit.innerText = data.cuitFormateado;
+
+      alert(`Datos de ${data.razonSocial} cargados con éxito.`);
+
+    } catch (error) {
+      console.error("Error al consultar ARCA:", error);
+      alert("Hubo un error de conexión al consultar el padrón.");
     }
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
-    const quickInput = document.getElementById('quick-cuit-input');
-    const quickBtn = document.getElementById('btn-quick-buscar-cuit');
-    if (quickBtn) {
-      quickBtn.addEventListener('click', () => onBuscarClick(quickInput, quickBtn));
-    }
+  // 5. Asignar los eventos a los botones[cite: 3]
+  if (btnQuickSearch) {
+    btnQuickSearch.addEventListener('click', () => {
+      consultarPadronARCA(inputQuickCuit.value);
+    });
+  }
 
-    const cfgInput = document.getElementById('cfg-cuit');
-    const cfgBtn = document.getElementById('btn-cfg-buscar-padron');
-    if (cfgBtn) {
-      cfgBtn.addEventListener('click', () => onBuscarClick(cfgInput, cfgBtn));
-    }
-  });
+  if (btnConfigSearch) {
+    btnConfigSearch.addEventListener('click', () => {
+      consultarPadronARCA(inputConfigCuit.value);
+    });
+  }
+});
 
-  window.ArcaApi = { consultarCuit, formatCuit };
-})();
+/**
+ * Función auxiliar para simular la respuesta del padrón ARCA.
+ * Puedes reemplazar esto cuando conectes tu backend Node.js.
+ */
+function simularLlamadaAPI(cuit) {
+  const prefijo = cuit.substring(0, 2);
+  const cuitFormateado = `${cuit.substring(0, 2)}-${cuit.substring(2, 10)}-${cuit.substring(10)}`;
+  
+  let respuesta = {
+    cuitFormateado: cuitFormateado,
+    razonSocial: 'CONTRIBUYENTE GENÉRICO',
+    tipoPersona: 'Física',
+    impuestos: []
+  };
+
+  // Lógica simulada basada en el CUIT
+  if (prefijo === '30' || prefijo === '33' || prefijo === '34') {
+    // Es una sociedad (Persona Jurídica)
+    respuesta.tipoPersona = 'Jurídica';
+    respuesta.razonSocial = 'LOGÍSTICA & IMPEX S.A.'; //[cite: 3]
+    respuesta.impuestos = ['IVA', 'GANANCIAS'];
+  } else if (cuit === '20123456789') {
+    // Ejemplo de Persona Física que SÍ es Responsable Inscripto
+    respuesta.tipoPersona = 'Física';
+    respuesta.razonSocial = 'SANTANA ESTUDIO CONTABLE'; //[cite: 3]
+    respuesta.impuestos = ['IVA']; 
+  } else {
+    // Ejemplo de Persona Física Monotributista (Fallará la validación)
+    respuesta.tipoPersona = 'Física';
+    respuesta.razonSocial = 'JUAN PÉREZ (MONOTRIBUTO)';
+    respuesta.impuestos = ['MONOTRIBUTO'];
+  }
+
+  return respuesta;
+}

@@ -1,0 +1,11 @@
+{
+  "environment": "testing",
+  "certPath": "./certs/arca.crt",
+  "keyPath": "./certs/arca.key",
+  "cuitEstudio": "20111111111",
+  "clientesAutorizados": [
+    { "cuit": "30500010912", "nombre": "LOGÍSTICA & IMPEX S.A." },
+    { "cuit": "27230938607", "nombre": "Otro Cliente del Estudio" }
+  ],
+  "_comentario": "Copiá este archivo como arca-config.json (sin '.example') y completá con tus datos reales. 'cuitEstudio' es tu propio CUIT (dueño del certificado). 'clientesAutorizados' es la lista de CUITs que ya te dieron de alta como apoderado en ARCA para el servicio ws_sr_padron_a13 (Administrador de Relaciones de Clave Fiscal, del lado del cliente). NUNCA subas arca-config.json ni la carpeta certs/ a un repositorio."
+}

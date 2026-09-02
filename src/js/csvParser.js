@@ -1,129 +1,229 @@
 /**
- * csvParser.js
- * Convierte archivos CSV/TXT (o texto pegado desde Excel) en comprobantes.
- *
- * Formato esperado por fila (separador ; o tab), 9 u 10 columnas:
- *   fecha;tipoDoc;puntoVenta;numero;cuit;razonSocial;neto;alicuota;retenciones[;tipoOperacion]
- * Ejemplo:
- *   2026-08-01;Factura A;00001;00012345;30500012344;PROVEEDOR S.A.;500000.00;21.0;0.00;compra
- *
- * Si la columna tipoOperacion no viene, se infiere:
- *  - alicuota 0 y tipoDoc contiene "E" -> exportacion
- *  - por defecto -> compra (el usuario puede reclasificar filas después de importar)
+ * Universal ARCA / AFIP CSV & TXT Parser
+ * Reads:
+ * 1. ARCA "Mis Comprobantes Recibidos" (Compras) CSV/TXT
+ * 2. ARCA "Mis Comprobantes Emitidos" (Ventas / Exportación E) CSV/TXT
+ * 3. ARCA "Despachos de Importación SIM" (Aduana) CSV/TXT
+ * 4. Libro de IVA Digital (LID) import files
+ * 5. Custom Excel / Plantilla CSV exports
  */
-(function () {
-  'use strict';
 
-  function limpiarNumero(str) {
-    if (typeof str === 'number') return str;
-    if (!str) return 0;
-    // admite tanto "1.234,56" (AR) como "1234.56" (US); nos quedamos con el último separador como decimal
-    const s = String(str).trim().replace(/\$/g, '').replace(/\s/g, '');
-    if (/,\d{1,2}$/.test(s) && s.includes('.')) {
-      return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0;
+window.CsvParser = (function() {
+
+  // Helper: Clean Argentine Number parsing (handles $ 1.250,50 -> 1250.50)
+  function parseArgNumber(val) {
+    if (val === null || val === undefined) return 0;
+    let s = String(val).trim().replace(/\$/g, '').replace(/\s/g, '');
+    if (!s) return 0;
+    
+    // Check if format is 1.250,50 (Argentine) vs 1,250.50 (US)
+    if (s.includes(',') && s.includes('.')) {
+      if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+        // Argentine: 1.250,50 -> remove dots, replace comma with dot
+        s = s.replace(/\./g, '').replace(',', '.');
+      } else {
+        // US: 1,250.50 -> remove commas
+        s = s.replace(/,/g, '');
+      }
+    } else if (s.includes(',')) {
+      // Single separator is comma -> decimal comma (e.g. 1250,50 -> 1250.50)
+      s = s.replace(',', '.');
     }
-    if (/,\d{1,2}$/.test(s)) {
-      return parseFloat(s.replace(',', '.')) || 0;
+    
+    const num = parseFloat(s);
+    return isNaN(num) ? 0 : num;
+  }
+
+  // Helper: Parse Argentine Date (DD/MM/AAAA or AAAA-MM-DD) into YYYY-MM-DD
+  function parseArgDate(val) {
+    if (!val) return new Date().toISOString().substring(0, 10);
+    const s = String(val).trim();
+
+    // Check DD/MM/AAAA or DD-MM-AAAA
+    const matchDMY = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (matchDMY) {
+      const day = matchDMY[1].padStart(2, '0');
+      const month = matchDMY[2].padStart(2, '0');
+      const year = matchDMY[3];
+      return `${year}-${month}-${day}`;
     }
-    return parseFloat(s.replace(/,/g, '')) || 0;
+
+    // Check AAAA-MM-DD
+    const matchYMD = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (matchYMD) {
+      const year = matchYMD[1];
+      const month = matchYMD[2].padStart(2, '0');
+      const day = matchYMD[3].padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    return s;
   }
 
-  function inferirTipoOperacion(tipoDoc, alicuota) {
-    const doc = String(tipoDoc || '').toLowerCase();
-    if (doc.includes('despacho') || doc.includes('impo')) return 'importacion';
-    if (doc.includes('factura e') || (Number(alicuota) === 0 && doc.includes('e'))) return 'exportacion';
-    return 'compra';
-  }
+  // Helper: Clean Voucher Type
+  function parseTipoDoc(val) {
+    if (!val) return 'Factura A';
+    let s = String(val).trim();
 
-  function detectarSeparador(linea) {
-    if (linea.includes(';')) return ';';
-    if (linea.includes('\t')) return '\t';
-    return ',';
-  }
+    // Official ARCA numeric codes:
+    // 1=Factura A, 2=Nota de Debito A, 3=Nota de Credito A, 6=Factura B, 7=NC B, 8=ND B, 11=Factura C, 19=Factura E
+    if (/^1\b|^001\b/i.test(s) && !s.includes('11') && !s.includes('19')) return 'Factura A';
+    if (/^2\b|^002\b/i.test(s)) return 'Nota de Débito A';
+    if (/^3\b|^003\b/i.test(s)) return 'Nota de Crédito A';
+    if (/^6\b|^006\b/i.test(s)) return 'Factura B';
+    if (/^7\b|^007\b/i.test(s)) return 'Nota de Crédito B';
+    if (/^8\b|^008\b/i.test(s)) return 'Nota de Débito B';
+    if (/^11\b|^011\b/i.test(s)) return 'Factura C';
+    if (/^19\b|^019\b/i.test(s) || s.toUpperCase().includes('FACTURA E') || s.toUpperCase().includes('EXPORT')) return 'Factura E';
+    if (s.toLowerCase().includes('despacho') || s.toLowerCase().includes('import')) return 'Despacho Impo';
 
-  function generarId() {
-    return `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    return s;
   }
 
   /**
-   * Parsea texto plano (pegado o leído de archivo) a un array de comprobantes.
-   * @param {String} texto
-   * @param {Object} opciones - { fuente: 'sistema'|'arca', tipoOperacionForzado: string|null }
+   * Main CSV Parser Function
    */
-  function parsearTexto(texto, opciones = {}) {
-    const { fuente = 'sistema', tipoOperacionForzado = null } = opciones;
-    const lineas = String(texto).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const errores = [];
-    const comprobantes = [];
+  function parseArcaCSV(csvText, defaultTipoOp = null) {
+    if (!csvText || typeof csvText !== 'string') return [];
 
-    lineas.forEach((linea, idx) => {
-      // saltar posible fila de encabezado
-      if (idx === 0 && /fecha/i.test(linea) && /(cuit|neto)/i.test(linea)) return;
+    // Clean BOM if present
+    const cleanText = csvText.replace(/^\uFEFF/, '').trim();
+    const lines = cleanText.split(/\r?\n/).filter(line => line.trim().length > 0);
+    if (lines.length === 0) return [];
 
-      const sep = detectarSeparador(linea);
-      const cols = linea.split(sep).map((c) => c.trim());
+    // Determine Delimiter (; , \t |)
+    const firstLine = lines[0];
+    let delimiter = ';';
+    if (firstLine.includes(';') && (firstLine.split(';').length >= firstLine.split(',').length)) {
+      delimiter = ';';
+    } else if (firstLine.includes('\t')) {
+      delimiter = '\t';
+    } else if (firstLine.includes(',')) {
+      delimiter = ',';
+    }
 
-      if (cols.length < 7) {
-        errores.push(`Línea ${idx + 1}: se esperaban al menos 7 columnas, se encontraron ${cols.length}.`);
-        return;
+    // Split headers cleanly
+    const rawHeaders = firstLine.split(delimiter).map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+
+    // Header index finder helper
+    function findHeaderIdx(patterns) {
+      return rawHeaders.findIndex(h => patterns.some(p => h.includes(p)));
+    }
+
+    // Header Mappings for Official ARCA CSVs
+    const idxFecha = findHeaderIdx(['fecha', 'date']);
+    const idxTipo = findHeaderIdx(['tipo', 'comprobante', 'doc']);
+    const idxPtoVta = findHeaderIdx(['punto de venta', 'pto vta', 'pto. vta', 'pto_vta', 'pv']);
+    const idxNumDesde = findHeaderIdx(['número desde', 'numero desde', 'nro desde', 'numero', 'número', 'num']);
+    const idxCuit = findHeaderIdx(['nro. doc. emisor', 'nro doc emisor', 'nro. doc. receptor', 'nro doc receptor', 'cuit', 'nro. doc', 'nro doc', 'cuit contraparte', 'codigo aduana']);
+    const idxRazon = findHeaderIdx(['denominación emisor', 'denominacion emisor', 'denominación receptor', 'denominacion receptor', 'razón social', 'razon social', 'nombre', 'razon', 'aduana']);
+    const idxNeto = findHeaderIdx(['imp. neto gravado', 'neto gravado', 'imp neto gravado', 'neto', 'cif_neto', 'imp. total']);
+    const idxIva = findHeaderIdx(['iva', 'impuesto liquidado', 'débito fiscal', 'crédito fiscal']);
+    const idxAlicuota = findHeaderIdx(['alícuota', 'alicuota', 'tasa']);
+    const idxTributos = findHeaderIdx(['otros tributos', 'percepciones', 'retenciones', 'percepcion']);
+
+    // Detect if this file is Compras (Recibidos) vs Ventas (Emitidos) vs Importaciones
+    let fileIsVenta = rawHeaders.some(h => h.includes('receptor')) || rawHeaders.some(h => h.includes('cliente'));
+    let fileIsCompra = rawHeaders.some(h => h.includes('emisor')) || rawHeaders.some(h => h.includes('proveedor'));
+    let fileIsImpo = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif'));
+
+    const parsedVouchers = [];
+
+    // Parse data rows
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      // Handle quoted CSV fields correctly
+      let cols = [];
+      if (line.includes('"')) {
+        const regex = new RegExp(`(?:^|${delimiter})(?:"([^"]*)"|([^"${delimiter}]*))`, 'g');
+        let match;
+        while ((match = regex.exec(line)) !== null) {
+          cols.push((match[1] !== undefined ? match[1] : match[2] || '').trim());
+        }
+      } else {
+        cols = line.split(delimiter).map(c => c.trim());
       }
 
-      const [fecha, tipoDoc, puntoVenta, numero, cuit, razonSocial, netoStr, alicuotaStr, retStr, tipoOpStr] = cols;
+      if (cols.length < 2) continue;
 
-      const cuitLimpio = String(cuit || '').replace(/[^0-9]/g, '');
-      if (cuitLimpio.length !== 11) {
-        errores.push(`Línea ${idx + 1}: CUIT "${cuit}" inválido (debe tener 11 dígitos).`);
-        return;
+      // If headers weren't detected properly (e.g. no header line), fallback to column index
+      let fechaRaw = idxFecha >= 0 ? cols[idxFecha] : cols[0];
+      let fecha = parseArgDate(fechaRaw);
+
+      let tipoDocRaw = idxTipo >= 0 ? cols[idxTipo] : cols[1];
+      let tipoDoc = parseTipoDoc(tipoDocRaw);
+
+      let ptoVta = idxPtoVta >= 0 ? cols[idxPtoVta] : (cols[2] || '00001');
+      let numero = idxNumDesde >= 0 ? cols[idxNumDesde] : (cols[3] || '00000001');
+
+      let cuitRaw = idxCuit >= 0 ? cols[idxCuit] : (cols[4] || '30000000000');
+      let cuit = String(cuitRaw).replace(/\D/g, '');
+      if (cuit.length === 11) {
+        cuit = `${cuit.substring(0, 2)}-${cuit.substring(2, 10)}-${cuit.substring(10)}`;
       }
 
-      const neto = limpiarNumero(netoStr);
-      const alicuota = alicuotaStr !== undefined ? limpiarNumero(alicuotaStr) : 21;
-      const retenciones = retStr !== undefined ? limpiarNumero(retStr) : 0;
-      const tipoOperacion = tipoOperacionForzado
-        || (tipoOpStr ? tipoOpStr.trim().toLowerCase() : null)
-        || inferirTipoOperacion(tipoDoc, alicuota);
+      let razon = idxRazon >= 0 ? cols[idxRazon] : (cols[5] || 'Contribuyente ARCA');
+      
+      let neto = parseArgNumber(idxNeto >= 0 ? cols[idxNeto] : cols[6]);
+      let iva = idxIva >= 0 ? parseArgNumber(cols[idxIva]) : 0;
+      let alicuotaExplicit = idxAlicuota >= 0 ? parseArgNumber(cols[idxAlicuota]) : null;
+      let retenciones = idxTributos >= 0 ? parseArgNumber(cols[idxTributos]) : (cols[8] ? parseArgNumber(cols[8]) : 0);
 
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
-        errores.push(`Línea ${idx + 1}: fecha "${fecha}" debe tener formato YYYY-MM-DD.`);
-        return;
+      // Determine alicuota
+      let alicuota = 21;
+      if (alicuotaExplicit !== null && alicuotaExplicit > 0) {
+        alicuota = alicuotaExplicit;
+      } else if (neto > 0 && iva > 0) {
+        const calcAli = (iva / neto) * 100;
+        if (Math.abs(calcAli - 21) < 2) alicuota = 21;
+        else if (Math.abs(calcAli - 10.5) < 2) alicuota = 10.5;
+        else if (Math.abs(calcAli - 27) < 2) alicuota = 27;
+        else if (Math.abs(calcAli - 5) < 1) alicuota = 5;
+        else if (Math.abs(calcAli - 2.5) < 1) alicuota = 2.5;
+        else alicuota = Math.round(calcAli * 10) / 10;
       }
 
-      comprobantes.push({
-        id: generarId(),
-        fuente,
-        tipoOperacion,
+      // Determine Operation Type (tipoOp)
+      let tipoOp = 'compra';
+      if (tipoDoc.includes('Factura E') || tipoDoc.toLowerCase().includes('export')) {
+        tipoOp = 'exportacion';
+        alicuota = 0;
+      } else if (fileIsImpo || tipoDoc.toLowerCase().includes('despacho')) {
+        tipoOp = 'importacion';
+      } else if (fileIsVenta || defaultTipoOp === 'venta') {
+        tipoOp = 'venta';
+      } else if (fileIsCompra || defaultTipoOp === 'compra') {
+        tipoOp = 'compra';
+      }
+
+      // Format numero clean (00001-00001234)
+      const ptoClean = String(ptoVta).replace(/\D/g, '').padStart(5, '0');
+      const numClean = String(numero).replace(/\D/g, '').padStart(8, '0');
+      const fullNumero = (ptoClean !== '00000' && numClean !== '00000000') ? `${ptoClean}-${numClean}` : String(numero);
+
+      parsedVouchers.push({
+        id: 'arca_imp_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 4),
         fecha,
-        tipoDoc: tipoDoc || '',
-        numero: `${puntoVenta || ''}-${numero || ''}`.replace(/^-|-$/g, ''),
-        cuit: cuitLimpio,
-        razonSocial: razonSocial || '',
-        neto: round2(neto),
+        tipoOp,
+        tipoDoc,
+        numero: fullNumero,
+        cuit: cuit || '30-00000000-0',
+        razon: razon || 'CONTRIBUYENTE ARCA',
+        neto,
         alicuota,
-        retencionesPercepciones: round2(retenciones),
-        esPercepcionAduanera: tipoOperacion === 'importacion' && alicuota === 0 && retenciones > 0,
-        vinculadoExportacion: false,
-        createdAt: new Date().toISOString()
+        retenciones,
+        esAduanera: tipoOp === 'importacion' ? 'si' : 'no'
       });
-    });
+    }
 
-    return { comprobantes, errores };
+    return parsedVouchers;
   }
 
-  function round2(n) {
-    return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-  }
-
-  /**
-   * Lee un File (input o drag&drop) y devuelve el texto plano.
-   */
-  function leerArchivo(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
-      reader.readAsText(file, 'UTF-8');
-    });
-  }
-
-  window.CsvParser = { parsearTexto, leerArchivo, limpiarNumero };
+  return {
+    parseArcaCSV,
+    parseArgNumber,
+    parseArgDate
+  };
 })();
