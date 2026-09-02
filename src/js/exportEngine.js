@@ -146,6 +146,12 @@ window.ExportEngine = (function() {
       filename = 'Plantilla_Despachos_Importacion_SIM.csv';
       content = `Fecha;TipoComprobante;CodigoAduana;NumeroDespacho;CUITAduana;AduanaNombre;CIF_Neto;AlicuotaIVA;PercepcionAduaneraRG5339\n`;
       content += `2026-08-08;Despacho Impo;26001;IC04001294X;33999000019;ADUANA BUENOS AIRES;6500000.00;21.0;1300000.00\n`;
+    } else if (type === 'retenciones') {
+      filename = 'Plantilla_Retenciones_y_Percepciones.csv';
+      content = `Fecha;TipoComprobante;NumeroComprobante;CUITAgente;DenominacionAgente;ImporteRetenidoPercibido;EsAduanera\n`;
+      content += `2026-08-03;Certificado Retención IVA;00001-00004521;30500012344;DISTRIBUIDORA CLIENTE S.A.;45000.00;no\n`;
+      content += `2026-08-08;Percepción Aduanera RG 5339;26001-IC04001294X;33999000019;ADUANA DE BUENOS AIRES;1300000.00;si\n`;
+      content += `2026-08-15;Retención Bancaria SIRCER;00000-00994120;30999000029;BANCO DE LA NACIÓN ARGENTINA;12500.00;no\n`;
     }
 
     downloadFile(filename, content, 'text/csv;charset=utf-8;');

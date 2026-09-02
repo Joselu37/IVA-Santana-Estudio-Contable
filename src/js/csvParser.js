@@ -1,10 +1,11 @@
 /**
- * Universal ARCA / AFIP CSV & TXT Parser
+ * Universal ARCA / AFIP CSV & TXT Parser (Ultra-Robust Version)
  * Reads:
  * 1. ARCA "Mis Comprobantes Recibidos" (Compras) CSV/TXT
  * 2. ARCA "Mis Comprobantes Emitidos" (Ventas / Exportación E) CSV/TXT
  * 3. ARCA "Despachos de Importación SIM" (Aduana) CSV/TXT
- * 4. DDJJ Formulario F.2002 / LID TXT / F.731 de Períodos Anteriores
+ * 4. ARCA "Mis Retenciones / Percepciones" (Deducciones, SIRCER, RG 5339) CSV/TXT
+ * 5. DDJJ Formulario F.2002 / LID TXT / F.731 de Períodos Anteriores
  */
 
 window.CsvParser = (function() {
@@ -15,7 +16,6 @@ window.CsvParser = (function() {
     let s = String(val).trim().replace(/\$/g, '').replace(/\s/g, '');
     if (!s) return 0;
     
-    // Check if format is 1.250,50 (Argentine) vs 1,250.50 (US)
     if (s.includes(',') && s.includes('.')) {
       if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
         s = s.replace(/\./g, '').replace(',', '.');
@@ -28,6 +28,17 @@ window.CsvParser = (function() {
     
     const num = parseFloat(s);
     return isNaN(num) ? 0 : num;
+  }
+
+  // Helper: Normalize String (removes accents, punctuation, lowercase)
+  function normalizeStr(str) {
+    if (!str) return '';
+    return String(str)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/g, " ")
+      .trim();
   }
 
   // Helper: Parse Argentine Date (DD/MM/AAAA or AAAA-MM-DD) into YYYY-MM-DD
@@ -68,6 +79,8 @@ window.CsvParser = (function() {
     if (/^11\b|^011\b/i.test(s)) return 'Factura C';
     if (/^19\b|^019\b/i.test(s) || s.toUpperCase().includes('FACTURA E') || s.toUpperCase().includes('EXPORT')) return 'Factura E';
     if (s.toLowerCase().includes('despacho') || s.toLowerCase().includes('import')) return 'Despacho Impo';
+    if (s.toLowerCase().includes('retencion') || s.toLowerCase().includes('retención')) return 'Certificado Retención';
+    if (s.toLowerCase().includes('percepcion') || s.toLowerCase().includes('percepción')) return 'Constancia Percepción';
 
     return s;
   }
@@ -84,20 +97,17 @@ window.CsvParser = (function() {
     let cuitEncontrado = '';
     let razonEncontrada = '';
 
-    // Intentar buscar números o palabras clave en el texto
     const lines = cleanText.split(/\r?\n/);
 
     lines.forEach(line => {
-      const l = line.toLowerCase();
+      const l = normalizeStr(line);
       
-      // CUIT
       const cuitMatch = line.match(/\b(20|23|27|30|33|34)[\-]?\d{8}[\-]?\d\b/);
       if (cuitMatch && !cuitEncontrado) {
         cuitEncontrado = cuitMatch[0];
       }
 
-      // Saldo Técnico 1er párrafo
-      if (l.includes('saldo técnico') || l.includes('saldo tecnico') || l.includes('1er párrafo') || l.includes('1er parrafo') || l.includes('tecnico resultante')) {
+      if (l.includes('saldo tecnico') || l.includes('1er parrafo') || l.includes('tecnico resultante')) {
         const numbers = line.match(/[\d\.\,]+/g);
         if (numbers && numbers.length > 0) {
           const val = parseArgNumber(numbers[numbers.length - 1]);
@@ -105,8 +115,7 @@ window.CsvParser = (function() {
         }
       }
 
-      // Saldo Libre Disponibilidad 2do párrafo
-      if (l.includes('libre disponibilidad') || l.includes('2do párrafo') || l.includes('2do parrafo') || l.includes('saldo libre')) {
+      if (l.includes('libre disponibilidad') || l.includes('2do parrafo') || l.includes('saldo libre')) {
         const numbers = line.match(/[\d\.\,]+/g);
         if (numbers && numbers.length > 0) {
           const val = parseArgNumber(numbers[numbers.length - 1]);
@@ -124,7 +133,7 @@ window.CsvParser = (function() {
   }
 
   /**
-   * Main CSV Parser Function
+   * Main CSV Parser Function (Soporta Comprobantes, Despachos y Mis Retenciones ARCA)
    */
   function parseArcaCSV(csvText, defaultTipoOp = null) {
     if (!csvText || typeof csvText !== 'string') return [];
@@ -143,29 +152,44 @@ window.CsvParser = (function() {
       delimiter = ',';
     }
 
-    const rawHeaders = firstLine.split(delimiter).map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+    const rawHeaders = firstLine.split(delimiter).map(h => normalizeStr(h));
 
     function findHeaderIdx(patterns) {
       return rawHeaders.findIndex(h => patterns.some(p => h.includes(p)));
     }
 
-    const idxFecha = findHeaderIdx(['fecha', 'date']);
-    const idxTipo = findHeaderIdx(['tipo', 'comprobante', 'doc']);
-    const idxPtoVta = findHeaderIdx(['punto de venta', 'pto vta', 'pto. vta', 'pto_vta', 'pv']);
-    const idxNumDesde = findHeaderIdx(['número desde', 'numero desde', 'nro desde', 'numero', 'número', 'num']);
-    const idxCuit = findHeaderIdx(['nro. doc. emisor', 'nro doc emisor', 'nro. doc. receptor', 'nro doc receptor', 'cuit', 'nro. doc', 'nro doc', 'cuit contraparte', 'codigo aduana']);
-    const idxRazon = findHeaderIdx(['denominación emisor', 'denominacion emisor', 'denominación receptor', 'denominacion receptor', 'razón social', 'razon social', 'nombre', 'razon', 'aduana']);
-    
-    // Columnas de montos
-    const idxNeto = findHeaderIdx(['imp. neto gravado', 'neto gravado', 'imp neto gravado', 'neto', 'cif_neto']);
-    const idxTotal = findHeaderIdx(['imp. total', 'monto total', 'total']);
-    const idxIva = findHeaderIdx(['iva', 'impuesto liquidado', 'débito fiscal', 'debito fiscal', 'crédito fiscal', 'credito fiscal']);
-    const idxAlicuota = findHeaderIdx(['alícuota', 'alicuota', 'tasa']);
-    const idxTributos = findHeaderIdx(['otros tributos', 'percepciones', 'retenciones', 'percepcion']);
+    // Detector si el archivo es del módulo "Mis Retenciones" de ARCA
+    const isMisRetenciones = rawHeaders.some(h => h.includes('retenido') || h.includes('percibido') || h.includes('agente') || h.includes('regimen') || h.includes('deduccion'));
 
-    let fileIsVenta = rawHeaders.some(h => h.includes('receptor')) || rawHeaders.some(h => h.includes('cliente'));
-    let fileIsCompra = rawHeaders.some(h => h.includes('emisor')) || rawHeaders.some(h => h.includes('proveedor'));
-    let fileIsImpo = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif'));
+    const idxFecha = findHeaderIdx(['fecha', 'date', 'emision', 'fecha ret']);
+    const idxTipo = findHeaderIdx(['tipo', 'comprobante', 'doc', 'cbte', 'impuesto', 'regimen']);
+    const idxPtoVta = findHeaderIdx(['punto de venta', 'pto vta', 'pv', 'punto vta']);
+    const idxNumDesde = findHeaderIdx(['numero desde', 'nro desde', 'numero', 'num', 'cbte nro', 'nro comprobante']);
+    
+    // CUIT y Razón Social (Emisor, Receptor o Agente)
+    const idxCuitAgente = findHeaderIdx(['cuit agente', 'nro doc agente', 'doc agente']);
+    const idxCuitEmisor = findHeaderIdx(['nro doc emisor', 'doc emisor', 'cuit emisor']);
+    const idxCuitReceptor = findHeaderIdx(['nro doc receptor', 'doc receptor', 'cuit receptor']);
+    const idxCuitGen = findHeaderIdx(['cuit', 'nro doc', 'doc', 'cuit contraparte', 'codigo aduana']);
+    const idxCuit = idxCuitAgente >= 0 ? idxCuitAgente : (idxCuitEmisor >= 0 ? idxCuitEmisor : (idxCuitReceptor >= 0 ? idxCuitReceptor : idxCuitGen));
+
+    const idxRazonAgente = findHeaderIdx(['denominacion agente', 'nombre agente', 'agente']);
+    const idxRazonEmisor = findHeaderIdx(['denominacion emisor', 'nombre emisor', 'razon social emisor']);
+    const idxRazonReceptor = findHeaderIdx(['denominacion receptor', 'nombre receptor', 'razon social receptor']);
+    const idxRazonGen = findHeaderIdx(['denominacion', 'razon social', 'nombre', 'razon', 'aduana']);
+    const idxRazon = idxRazonAgente >= 0 ? idxRazonAgente : (idxRazonEmisor >= 0 ? idxRazonEmisor : (idxRazonReceptor >= 0 ? idxRazonReceptor : idxRazonGen));
+
+    // Montos
+    const idxNeto = findHeaderIdx(['imp neto gravado', 'neto gravado', 'neto', 'cif neto', 'subtotal']);
+    const idxTotal = findHeaderIdx(['imp total', 'monto total', 'total', 'importe total']);
+    const idxIva = findHeaderIdx(['iva', 'impuesto liquidado', 'debito fiscal', 'credito fiscal', 'imp iva']);
+    const idxAlicuota = findHeaderIdx(['alicuota', 'tasa', 'pct']);
+    const idxTributos = findHeaderIdx(['otros tributos', 'percepciones', 'retenciones', 'percepcion', 'retencion', 'importe retenido', 'importe percibido', 'monto retenido', 'monto percibido']);
+
+    // Detector de Operación
+    const isVentasFile = rawHeaders.some(h => h.includes('receptor') || h.includes('cliente'));
+    const isComprasFile = rawHeaders.some(h => h.includes('emisor') || h.includes('proveedor'));
+    const isImpoFile = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif'));
 
     const parsedVouchers = [];
 
@@ -201,26 +225,36 @@ window.CsvParser = (function() {
         cuit = `${cuit.substring(0, 2)}-${cuit.substring(2, 10)}-${cuit.substring(10)}`;
       }
 
-      let razon = idxRazon >= 0 ? cols[idxRazon] : (cols[5] || 'Contribuyente ARCA');
-      
+      let razon = idxRazon >= 0 ? cols[idxRazon] : (cols[5] || 'Agente / Contribuyente ARCA');
+
       let neto = idxNeto >= 0 ? parseArgNumber(cols[idxNeto]) : 0;
       let total = idxTotal >= 0 ? parseArgNumber(cols[idxTotal]) : 0;
       let iva = idxIva >= 0 ? parseArgNumber(cols[idxIva]) : 0;
       let alicuotaExplicit = idxAlicuota >= 0 ? parseArgNumber(cols[idxAlicuota]) : null;
       let retenciones = idxTributos >= 0 ? parseArgNumber(cols[idxTributos]) : (cols[8] ? parseArgNumber(cols[8]) : 0);
 
-      // Si neto es 0 pero total > 0 e iva > 0
-      if (neto === 0 && total > 0) {
+      // Manejo especial de "Mis Retenciones / Percepciones ARCA"
+      let esAduanera = 'no';
+      const lineNorm = normalizeStr(line);
+      if (isMisRetenciones || lineNorm.includes('retencion') || lineNorm.includes('percepcion')) {
+        if (retenciones === 0 && total > 0) {
+          retenciones = total;
+        }
+        if (lineNorm.includes('aduana') || lineNorm.includes('767') || lineNorm.includes('rg 5339')) {
+          esAduanera = 'si';
+          tipoDoc = 'Percepción Aduanera (RG 5339)';
+        } else if (lineNorm.includes('percepcion')) {
+          tipoDoc = 'Constancia Percepción IVA';
+        } else {
+          tipoDoc = 'Certificado Retención IVA';
+        }
+      }
+
+      if (neto === 0 && total > 0 && iva > 0) {
         neto = total - iva - retenciones;
         if (neto < 0) neto = total;
       }
 
-      // Si no viene Neto Gravado específico en la fila pero hay Total
-      if (neto === 0 && cols[6]) {
-        neto = parseArgNumber(cols[6]);
-      }
-
-      // Determinar alícuota
       let alicuota = 21;
       if (alicuotaExplicit !== null && alicuotaExplicit > 0) {
         alicuota = alicuotaExplicit;
@@ -232,23 +266,18 @@ window.CsvParser = (function() {
         else if (Math.abs(calcAli - 5) < 1) alicuota = 5;
         else if (Math.abs(calcAli - 2.5) < 1) alicuota = 2.5;
         else alicuota = Math.round(calcAli * 10) / 10;
-      } else if (iva === 0 && neto > 0) {
-        // Asumir alícuota general 21% si no viene discriminada
-        iva = (neto * 0.21);
-        alicuota = 21;
       }
 
-      // Determine Operation Type (tipoOp)
       let tipoOp = 'compra';
       if (tipoDoc.includes('Factura E') || tipoDoc.toLowerCase().includes('export')) {
         tipoOp = 'exportacion';
         alicuota = 0;
         iva = 0;
-      } else if (fileIsImpo || tipoDoc.toLowerCase().includes('despacho')) {
+      } else if (isImpoFile || tipoDoc.toLowerCase().includes('despacho')) {
         tipoOp = 'importacion';
-      } else if (fileIsVenta || defaultTipoOp === 'venta') {
+      } else if (isVentasFile || defaultTipoOp === 'venta') {
         tipoOp = 'venta';
-      } else if (fileIsCompra || defaultTipoOp === 'compra') {
+      } else if (isComprasFile || defaultTipoOp === 'compra') {
         tipoOp = 'compra';
       }
 
@@ -270,7 +299,7 @@ window.CsvParser = (function() {
         cf: (tipoOp === 'compra' || tipoOp === 'importacion') ? iva : 0,
         alicuota,
         retenciones,
-        esAduanera: tipoOp === 'importacion' ? 'si' : 'no'
+        esAduanera: esAduanera === 'si' || tipoOp === 'importacion' ? 'si' : 'no'
       });
     }
 

@@ -449,9 +449,14 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-tpl-ventas')?.addEventListener('click', () => ExportEngine.downloadTemplate('ventas'));
     document.getElementById('btn-tpl-compras')?.addEventListener('click', () => ExportEngine.downloadTemplate('compras'));
     document.getElementById('btn-tpl-impo')?.addEventListener('click', () => ExportEngine.downloadTemplate('impo'));
+    document.getElementById('btn-tpl-retenciones')?.addEventListener('click', () => ExportEngine.downloadTemplate('retenciones'));
 
-    // Import CSV ARCA
+    // Import CSV ARCA & Retenciones
     document.getElementById('btn-import-arca')?.addEventListener('click', () => {
+      inputFileArca.click();
+    });
+
+    document.getElementById('btn-import-retenciones-top')?.addEventListener('click', () => {
       inputFileArca.click();
     });
 
@@ -601,8 +606,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     filtered.forEach(v => {
-      const df = v.tipoOp === 'venta' ? (v.neto * v.alicuota) / 100 : 0;
-      const cf = (v.tipoOp === 'compra' || v.tipoOp === 'importacion') ? (v.neto * v.alicuota) / 100 : 0;
+      let df = 0;
+      let cf = 0;
+
+      if (v.tipoOp === 'venta') {
+        df = parseFloat(v.df || v.iva) || ((v.neto * v.alicuota) / 100);
+      } else if (v.tipoOp === 'compra' || v.tipoOp === 'importacion') {
+        cf = parseFloat(v.cf || v.iva) || ((v.neto * v.alicuota) / 100);
+      }
 
       let badgeClass = 'venta';
       let labelOp = 'Venta Loc.';
