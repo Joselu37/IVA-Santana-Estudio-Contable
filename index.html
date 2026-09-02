@@ -118,7 +118,10 @@
             <button id="btn-import-arca" class="btn btn-primary">
               <i class="ri-upload-cloud-line"></i> Importar CSV / TXT ARCA
             </button>
-            <button id="btn-nuevo-comprobante" class="btn btn-secondary">
+            <button id="btn-import-ddjj-top" class="btn btn-secondary">
+              <i class="ri-file-history-line"></i> Cargar DDJJ Anterior (Saldos)
+            </button>
+            <button id="btn-nuevo-comprobante" class="btn btn-outline">
               <i class="ri-add-circle-line"></i> Nuevo Comprobante
             </button>
             <button id="btn-descargar-plantillas" class="btn btn-outline">
@@ -587,6 +590,13 @@
           <label>Razón Social / Nombre</label>
           <input type="text" id="cfg-razon" value="LOGÍSTICA & IMPEX S.A." required>
         </div>
+        <div class="form-group" style="background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.85rem; border-radius: var(--radius-md);">
+          <label style="color: var(--color-info);">Saldos Período Anterior desde DDJJ F.2002 / LID</label>
+          <button type="button" id="btn-import-ddjj-modal" class="btn btn-outline btn-sm" style="width:100%; margin-top:0.35rem;">
+            <i class="ri-upload-cloud-line"></i> Extraer Saldos desde Archivo DDJJ Anterior
+          </button>
+        </div>
+
         <div class="form-group">
           <label>Saldo Técnico del Mes Anterior ($) (1er Párrafo Art. 24)</label>
           <input type="number" step="0.01" id="cfg-st-anterior" value="150000.00">
@@ -683,8 +693,9 @@
     </div>
   </div>
 
-  <!-- Hidden File Input for CSV Upload -->
+  <!-- Hidden File Inputs -->
   <input type="file" id="input-file-arca" accept=".csv,.txt,.xlsx,.xls" style="display:none">
+  <input type="file" id="input-file-ddjj" accept=".csv,.txt,.json,.pdf" style="display:none">
 
   <!-- External CDNs: SheetJS for native .xlsx/.xls support -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>

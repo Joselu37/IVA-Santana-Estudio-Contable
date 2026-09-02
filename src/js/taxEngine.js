@@ -46,20 +46,28 @@ window.TaxEngine = (function() {
     // Iterar comprobantes
     comprobantes.forEach(comp => {
       const neto = parseFloat(comp.neto) || 0;
-      const alicuota = parseFloat(comp.alicuota) || 0;
+      let alicuota = parseFloat(comp.alicuota) || 0;
       const retPercep = parseFloat(comp.retenciones) || 0;
       const esAduanera = comp.esAduanera === 'si' || comp.esAduanera === true;
 
-      // 1. VENTAS
+      // 1. VENTAS (Mercado Interno)
       if (comp.tipoOp === 'venta') {
         dfNetoTotal += neto;
-        const dfComp = (neto * alicuota) / 100;
+        
+        let dfComp = parseFloat(comp.df || comp.iva) || 0;
+        if (dfComp === 0 && neto > 0 && alicuota > 0) {
+          dfComp = (neto * alicuota) / 100;
+        } else if (dfComp > 0 && neto > 0 && alicuota === 0) {
+          alicuota = Math.round((dfComp / neto) * 100 * 10) / 10;
+          comp.alicuota = alicuota;
+        }
+
         dfTotal += dfComp;
 
-        if (dfPorAlicuota[alicuota] !== undefined) {
-          dfPorAlicuota[alicuota] += dfComp;
-          dfNetoPorAlicuota[alicuota] += neto;
-        }
+        // Clasificación por alícuota en tabla
+        const aliKey = [21, 10.5, 27, 5, 2.5].find(a => Math.abs(a - alicuota) < 1) || 21;
+        dfPorAlicuota[aliKey] = (dfPorAlicuota[aliKey] || 0) + dfComp;
+        dfNetoPorAlicuota[aliKey] = (dfNetoPorAlicuota[aliKey] || 0) + neto;
       } 
       // 2. EXPORTACIONES (Factura E)
       else if (comp.tipoOp === 'exportacion') {
@@ -69,13 +77,20 @@ window.TaxEngine = (function() {
       // 3. COMPRAS LOCALES
       else if (comp.tipoOp === 'compra') {
         cfNetoTotal += neto;
-        const cfComp = (neto * alicuota) / 100;
+        
+        let cfComp = parseFloat(comp.cf || comp.iva) || 0;
+        if (cfComp === 0 && neto > 0 && alicuota > 0) {
+          cfComp = (neto * alicuota) / 100;
+        } else if (cfComp > 0 && neto > 0 && alicuota === 0) {
+          alicuota = Math.round((cfComp / neto) * 100 * 10) / 10;
+          comp.alicuota = alicuota;
+        }
+
         cfTotalBruto += cfComp;
 
-        if (cfPorAlicuota[alicuota] !== undefined) {
-          cfPorAlicuota[alicuota] += cfComp;
-          cfNetoPorAlicuota[alicuota] += neto;
-        }
+        const aliKey = [21, 10.5, 27, 5, 2.5].find(a => Math.abs(a - alicuota) < 1) || 21;
+        cfPorAlicuota[aliKey] = (cfPorAlicuota[aliKey] || 0) + cfComp;
+        cfNetoPorAlicuota[aliKey] = (cfNetoPorAlicuota[aliKey] || 0) + neto;
 
         if (retPercep > 0) {
           percepcionesLocales += retPercep;
@@ -85,7 +100,10 @@ window.TaxEngine = (function() {
       else if (comp.tipoOp === 'importacion') {
         if (incluirImpo) {
           impoNetoTotal += neto;
-          const impoIVA = (neto * alicuota) / 100;
+          let impoIVA = parseFloat(comp.cf || comp.iva) || 0;
+          if (impoIVA === 0 && neto > 0 && alicuota > 0) {
+            impoIVA = (neto * alicuota) / 100;
+          }
           impoIVATotal += impoIVA;
           cfNetoTotal += neto;
         }
@@ -106,7 +124,6 @@ window.TaxEngine = (function() {
     const cfComputableTotal = cfComputableLocales + (incluirImpo ? impoIVATotal : 0);
 
     // Recupero de IVA Exportador (Art. 43)
-    // El crédito fiscal vinculado a exportación se calcula según proporción de exportaciones sobre ventas totales
     const ventasTotales = dfNetoTotal + expoNetoTotal;
     let coefExportacion = 0;
     if (ventasTotales > 0) {
@@ -118,17 +135,14 @@ window.TaxEngine = (function() {
     const subtotalDebitoCredito = dfTotal - cfComputableTotal;
 
     // Determinación de Saldo Técnico (1er Párrafo Art. 24)
-    // Débito - Crédito - Saldo Técnico Anterior
     let saldoTecnicoNeto = subtotalDebitoCredito - stAnterior;
     let saldoTecnicoResultante = 0;
     let remanenteADisponer = 0;
 
     if (saldoTecnicoNeto < 0) {
-      // Saldo Técnico a Favor del Contribuyente
       saldoTecnicoResultante = Math.abs(saldoTecnicoNeto);
       remanenteADisponer = 0;
     } else {
-      // Impuesto a favor del Fisco antes de pagos a cuenta / SLD
       saldoTecnicoResultante = 0;
       remanenteADisponer = saldoTecnicoNeto;
     }
@@ -150,7 +164,6 @@ window.TaxEngine = (function() {
         saldoLibreDisponibilidadResultante = Math.abs(netFinal);
       }
     } else {
-      // El remanente a disponer era 0 (había Saldo Técnico a favor), por lo que todos los pagos a cuenta quedan como Saldo de Libre Disponibilidad
       impuestoAPagar = 0;
       saldoLibreDisponibilidadResultante = totalPagosACuenta;
     }

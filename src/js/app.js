@@ -140,6 +140,55 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
+    // IMPORTAR DDJJ PERÍODO ANTERIOR (SALDOS ART. 24)
+    const inputFileDdjj = document.getElementById('input-file-ddjj');
+
+    document.getElementById('btn-import-ddjj-top')?.addEventListener('click', () => inputFileDdjj?.click());
+    document.getElementById('btn-import-ddjj-modal')?.addEventListener('click', () => inputFileDdjj?.click());
+
+    inputFileDdjj?.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const text = event.target.result;
+          const result = CsvParser.parseDDJJAnterior(text);
+
+          if (result && (result.stAnterior > 0 || result.sldAnterior > 0 || result.cuit)) {
+            if (result.stAnterior > 0) contribuyente.stAnterior = result.stAnterior;
+            if (result.sldAnterior > 0) contribuyente.sldAnterior = result.sldAnterior;
+            if (result.cuit) contribuyente.cuit = result.cuit;
+            if (result.razon) contribuyente.razon = result.razon;
+
+            document.getElementById('header-razon-social').innerText = contribuyente.razon;
+            document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
+
+            saveState();
+            recalculateAll();
+
+            alert(`✅ ¡DDJJ del Período Anterior Procesada Exitosamente!\n\n• Saldo Técnico (1er Párrafo Art. 24): $${contribuyente.stAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}\n• Saldo Libre Disponibilidad (2do Párrafo Art. 24): $${contribuyente.sldAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}`);
+          } else {
+            // Si no traía montos automáticos, permitir ingresar los saldos directamente
+            const stVal = prompt('Ingrese el Saldo Técnico a Favor del período anterior ($) (1er Párrafo Art. 24):', contribuyente.stAnterior);
+            const sldVal = prompt('Ingrese el Saldo de Libre Disponibilidad del período anterior ($) (2do Párrafo Art. 24):', contribuyente.sldAnterior);
+
+            if (stVal !== null) contribuyente.stAnterior = parseFloat(stVal) || 0;
+            if (sldVal !== null) contribuyente.sldAnterior = parseFloat(sldVal) || 0;
+
+            saveState();
+            recalculateAll();
+            alert('Saldos del período anterior actualizados correctamente.');
+          }
+        } catch (err) {
+          alert('Error al leer el archivo de la DDJJ anterior: ' + err.message);
+        }
+      };
+      reader.readAsText(file, 'ISO-8859-1');
+      inputFileDdjj.value = '';
+    });
+
     // DRAG & DROP ZONE FOR CSV / TXT / EXCEL
     const dropzone = document.getElementById('dropzone-arca');
     document.getElementById('btn-dropzone-select')?.addEventListener('click', () => inputFileArca.click());
