@@ -86,7 +86,7 @@ window.CsvParser = (function() {
   }
 
   /**
-   * Extrae saldos anteriores desde un archivo F.2002 / LID TXT / CSV DDJJ anterior
+   * Extrae saldos anteriores desde un archivo F.2002 / LID TXT / CSV DDJJ anterior (Versión ultra flexible)
    */
   function parseDDJJAnterior(text) {
     if (!text) return null;
@@ -102,12 +102,14 @@ window.CsvParser = (function() {
     lines.forEach(line => {
       const l = normalizeStr(line);
       
+      // Buscar CUIT
       const cuitMatch = line.match(/\b(20|23|27|30|33|34)[\-]?\d{8}[\-]?\d\b/);
       if (cuitMatch && !cuitEncontrado) {
         cuitEncontrado = cuitMatch[0];
       }
 
-      if (l.includes('saldo tecnico') || l.includes('1er parrafo') || l.includes('tecnico resultante')) {
+      // Saldo Técnico 1er párrafo (AFIP F.2002 / F.731 / LID)
+      if (l.includes('saldo tecnico') || l.includes('primer parrafo') || l.includes('1er parrafo') || l.includes('tecnico resultante') || l.includes('saldo a favor primer') || l.includes('st anterior')) {
         const numbers = line.match(/[\d\.\,]+/g);
         if (numbers && numbers.length > 0) {
           const val = parseArgNumber(numbers[numbers.length - 1]);
@@ -115,7 +117,8 @@ window.CsvParser = (function() {
         }
       }
 
-      if (l.includes('libre disponibilidad') || l.includes('2do parrafo') || l.includes('saldo libre')) {
+      // Saldo Libre Disponibilidad 2do párrafo
+      if (l.includes('libre disponibilidad') || l.includes('segundo parrafo') || l.includes('2do parrafo') || l.includes('saldo libre') || l.includes('saldo a favor segundo') || l.includes('sld anterior')) {
         const numbers = line.match(/[\d\.\,]+/g);
         if (numbers && numbers.length > 0) {
           const val = parseArgNumber(numbers[numbers.length - 1]);
@@ -123,6 +126,23 @@ window.CsvParser = (function() {
         }
       }
     });
+
+    // Si no se encontró por palabras clave pero hay números grandes en la planilla DDJJ
+    if (stAnterior === 0 && sldAnterior === 0) {
+      lines.forEach(line => {
+        const numbers = line.match(/[\d\.\,]{4,}/g);
+        if (numbers) {
+          numbers.forEach(nStr => {
+            const val = parseArgNumber(nStr);
+            if (val > 1000 && stAnterior === 0) {
+              stAnterior = val;
+            } else if (val > 500 && sldAnterior === 0 && val !== stAnterior) {
+              sldAnterior = val;
+            }
+          });
+        }
+      });
+    }
 
     return {
       stAnterior,
@@ -133,7 +153,7 @@ window.CsvParser = (function() {
   }
 
   /**
-   * Main CSV Parser Function (Soporta Comprobantes, Despachos y Mis Retenciones ARCA)
+   * Main CSV Parser Function
    */
   function parseArcaCSV(csvText, defaultTipoOp = null) {
     if (!csvText || typeof csvText !== 'string') return [];
@@ -158,7 +178,6 @@ window.CsvParser = (function() {
       return rawHeaders.findIndex(h => patterns.some(p => h.includes(p)));
     }
 
-    // Detector si el archivo es del módulo "Mis Retenciones" de ARCA
     const isMisRetenciones = rawHeaders.some(h => h.includes('retenido') || h.includes('percibido') || h.includes('agente') || h.includes('regimen') || h.includes('deduccion'));
 
     const idxFecha = findHeaderIdx(['fecha', 'date', 'emision', 'fecha ret']);
@@ -166,7 +185,6 @@ window.CsvParser = (function() {
     const idxPtoVta = findHeaderIdx(['punto de venta', 'pto vta', 'pv', 'punto vta']);
     const idxNumDesde = findHeaderIdx(['numero desde', 'nro desde', 'numero', 'num', 'cbte nro', 'nro comprobante']);
     
-    // CUIT y Razón Social (Emisor, Receptor o Agente)
     const idxCuitAgente = findHeaderIdx(['cuit agente', 'nro doc agente', 'doc agente']);
     const idxCuitEmisor = findHeaderIdx(['nro doc emisor', 'doc emisor', 'cuit emisor']);
     const idxCuitReceptor = findHeaderIdx(['nro doc receptor', 'doc receptor', 'cuit receptor']);
@@ -179,14 +197,12 @@ window.CsvParser = (function() {
     const idxRazonGen = findHeaderIdx(['denominacion', 'razon social', 'nombre', 'razon', 'aduana']);
     const idxRazon = idxRazonAgente >= 0 ? idxRazonAgente : (idxRazonEmisor >= 0 ? idxRazonEmisor : (idxRazonReceptor >= 0 ? idxRazonReceptor : idxRazonGen));
 
-    // Montos
     const idxNeto = findHeaderIdx(['imp neto gravado', 'neto gravado', 'neto', 'cif neto', 'subtotal']);
     const idxTotal = findHeaderIdx(['imp total', 'monto total', 'total', 'importe total']);
     const idxIva = findHeaderIdx(['iva', 'impuesto liquidado', 'debito fiscal', 'credito fiscal', 'imp iva']);
     const idxAlicuota = findHeaderIdx(['alicuota', 'tasa', 'pct']);
     const idxTributos = findHeaderIdx(['otros tributos', 'percepciones', 'retenciones', 'percepcion', 'retencion', 'importe retenido', 'importe percibido', 'monto retenido', 'monto percibido']);
 
-    // Detector de Operación
     const isVentasFile = rawHeaders.some(h => h.includes('receptor') || h.includes('cliente'));
     const isComprasFile = rawHeaders.some(h => h.includes('emisor') || h.includes('proveedor'));
     const isImpoFile = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif'));
@@ -233,7 +249,6 @@ window.CsvParser = (function() {
       let alicuotaExplicit = idxAlicuota >= 0 ? parseArgNumber(cols[idxAlicuota]) : null;
       let retenciones = idxTributos >= 0 ? parseArgNumber(cols[idxTributos]) : (cols[8] ? parseArgNumber(cols[8]) : 0);
 
-      // Manejo especial de "Mis Retenciones / Percepciones ARCA"
       let esAduanera = 'no';
       const lineNorm = normalizeStr(line);
       if (isMisRetenciones || lineNorm.includes('retencion') || lineNorm.includes('percepcion')) {
@@ -250,9 +265,27 @@ window.CsvParser = (function() {
         }
       }
 
-      if (neto === 0 && total > 0 && iva > 0) {
-        neto = total - iva - retenciones;
+      if (neto === 0 && total > 0) {
+        if (iva > 0) {
+          neto = total - iva - retenciones;
+        } else {
+          neto = Math.round((total / 1.21) * 100) / 100;
+          iva = Math.round((total - neto) * 100) / 100;
+        }
         if (neto < 0) neto = total;
+      }
+
+      if (neto === 0) {
+        cols.forEach((colVal, cIdx) => {
+          const valNum = parseArgNumber(colVal);
+          if (valNum > 100 && neto === 0 && cIdx !== idxPtoVta && cIdx !== idxNumDesde) {
+            neto = valNum;
+          }
+        });
+      }
+
+      if (iva === 0 && neto > 0 && !tipoDoc.includes('Factura E')) {
+        iva = Math.round((neto * 0.21) * 100) / 100;
       }
 
       let alicuota = 21;
