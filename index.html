@@ -101,37 +101,45 @@
 
       <!-- TAB 1: COMPROBANTES Y CARGA -->
       <div id="tab-comprobantes" class="tab-content active">
-        <div class="import-type-selector" style="margin-bottom:0.75rem;">
-          <label for="select-tipo-import" style="font-weight:600; margin-right:0.5rem;">
-            <i class="ri-price-tag-3-line"></i> ¿Qué archivo estás por cargar?
-          </label>
-          <select id="select-tipo-import" class="btn btn-outline btn-sm" style="min-width:280px;">
-            <option value="">Detectar automáticamente (puede fallar)</option>
-            <option value="venta">Comprobantes EMITIDOS (Ventas → Débito Fiscal)</option>
-            <option value="compra">Comprobantes RECIBIDOS (Compras → Crédito Fiscal)</option>
-            <option value="importacion">Despachos de Importación SIM (Aduana)</option>
-          </select>
-          <span style="display:block; font-size:0.8rem; color:#94a3b8; margin-top:0.25rem;">
-            Elegí el tipo antes de arrastrar o pegar el archivo — así la app no tiene que adivinar si es venta o compra.
-          </span>
-        </div>
-        <div class="dropzone-box" id="dropzone-arca">
-          <div class="dropzone-content">
-            <i class="ri-upload-cloud-2-line dropzone-icon"></i>
-            <div>
-              <strong>Arrastra tu archivo CSV / TXT / Excel de ARCA aquí</strong>
-              <p class="dropzone-sub">Soporta "Mis Comprobantes Emitidos/Recibidos", "Despachos SIM Importación" y plantillas del liquidador.</p>
+        <div class="import-grid" style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0.85rem; margin-bottom: 1rem;">
+
+          <div class="dropzone-box dropzone-tipo" id="dropzone-emitidos" style="border-color:rgba(16,185,129,0.4);">
+            <div class="dropzone-content">
+              <i class="ri-upload-cloud-2-line dropzone-icon"></i>
+              <strong>Comprobantes EMITIDOS</strong>
+              <p class="dropzone-sub">Ventas → Débito Fiscal. Arrastrá acá el CSV/TXT/Excel de "Mis Comprobantes Emitidos" de ARCA.</p>
+              <input type="file" id="input-file-emitidos" accept=".csv,.txt,.xlsx,.xls" hidden>
+              <button type="button" id="btn-select-emitidos" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
+              <button type="button" id="btn-pegar-emitidos" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto</button>
             </div>
-            <button id="btn-dropzone-select" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
-            <button id="btn-pegar-texto" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto / Excel</button>
           </div>
+
+          <div class="dropzone-box dropzone-tipo" id="dropzone-recibidos" style="border-color:rgba(59,130,246,0.4);">
+            <div class="dropzone-content">
+              <i class="ri-download-cloud-2-line dropzone-icon"></i>
+              <strong>Comprobantes RECIBIDOS</strong>
+              <p class="dropzone-sub">Compras → Crédito Fiscal. Arrastrá acá el CSV/TXT/Excel de "Mis Comprobantes Recibidos" de ARCA.</p>
+              <input type="file" id="input-file-recibidos" accept=".csv,.txt,.xlsx,.xls" hidden>
+              <button type="button" id="btn-select-recibidos" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
+              <button type="button" id="btn-pegar-recibidos" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto</button>
+            </div>
+          </div>
+
+          <div class="dropzone-box dropzone-tipo" id="dropzone-impo" style="border-color:rgba(234,179,8,0.4);">
+            <div class="dropzone-content">
+              <i class="ri-ship-2-line dropzone-icon"></i>
+              <strong>Despachos de Importación</strong>
+              <p class="dropzone-sub">Aduana (SIM) → Crédito Fiscal. Arrastrá acá el CSV/TXT/Excel de Despachos de Importación.</p>
+              <input type="file" id="input-file-impo" accept=".csv,.txt,.xlsx,.xls" hidden>
+              <button type="button" id="btn-select-impo" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
+              <button type="button" id="btn-pegar-impo" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto</button>
+            </div>
+          </div>
+
         </div>
 
         <div class="toolbar">
           <div class="actions-group">
-            <button id="btn-import-arca" class="btn btn-primary">
-              <i class="ri-upload-cloud-line"></i> Importar CSV / TXT ARCA
-            </button>
             <button id="btn-import-retenciones-top" class="btn btn-secondary">
               <i class="ri-shield-flash-line"></i> Importar Retenciones / Percepciones ARCA
             </button>
@@ -701,7 +709,7 @@
   <div id="modal-pegar-texto" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
-        <h3>Carga Rápida por Pegado de Texto / Excel</h3>
+        <h3 id="modal-pegar-titulo">Carga Rápida por Pegado de Texto / Excel</h3>
         <button class="modal-close" id="btn-close-pegar"><i class="ri-close-line"></i></button>
       </div>
       <form id="form-pegar-texto" class="modal-body">
@@ -719,8 +727,9 @@
   </div>
 
   <!-- Hidden File Inputs -->
-  <input type="file" id="input-file-arca" accept=".csv,.txt,.xlsx,.xls" style="display:none">
+  <input type="file" id="input-file-retenciones" accept=".csv,.txt,.xlsx,.xls" style="display:none">
   <input type="file" id="input-file-ddjj" accept=".csv,.txt,.json,.pdf" style="display:none">
+
 
   <!-- External CDNs: SheetJS for native .xlsx/.xls support -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>

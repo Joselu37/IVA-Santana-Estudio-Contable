@@ -229,6 +229,7 @@ window.CsvParser = (function() {
     const isImpoFile = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif'));
 
     const parsedVouchers = [];
+    const headerLineDetectada = lines[headerLineIdx];
 
     for (let i = headerLineIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -386,6 +387,7 @@ window.CsvParser = (function() {
       });
     }
 
+    parsedVouchers._headerLineDetectada = headerLineDetectada;
     return parsedVouchers;
   }
 

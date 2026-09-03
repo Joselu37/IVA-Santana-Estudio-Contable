@@ -42,7 +42,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalConfig = document.getElementById('modal-config');
   const formComp = document.getElementById('form-comprobante');
   const formConfig = document.getElementById('form-config');
-  const inputFileArca = document.getElementById('input-file-arca');
 
   // ----------------------------------------------------
   // INITIALIZATION
@@ -198,19 +197,41 @@ document.addEventListener('DOMContentLoaded', () => {
       inputFileDdjj.value = '';
     });
 
-    // DRAG & DROP ZONE FOR CSV / TXT / EXCEL
-    const dropzone = document.getElementById('dropzone-arca');
-    document.getElementById('btn-dropzone-select')?.addEventListener('click', () => inputFileArca.click());
+    // ===== CARGA POR TIPO EXPLÍCITO: EMITIDOS / RECIBIDOS / IMPORTACIÓN =====
+    // Cada zona tiene su propio input y fuerza su propio tipoOp — la app ya no
+    // tiene que adivinar si un archivo es de venta o de compra.
+    const ZONAS_IMPORT = [
+      { dropzoneId: 'dropzone-emitidos', btnSelectId: 'btn-select-emitidos', btnPegarId: 'btn-pegar-emitidos', inputId: 'input-file-emitidos', tipo: 'venta', label: 'Comprobantes EMITIDOS (Ventas)' },
+      { dropzoneId: 'dropzone-recibidos', btnSelectId: 'btn-select-recibidos', btnPegarId: 'btn-pegar-recibidos', inputId: 'input-file-recibidos', tipo: 'compra', label: 'Comprobantes RECIBIDOS (Compras)' },
+      { dropzoneId: 'dropzone-impo', btnSelectId: 'btn-select-impo', btnPegarId: 'btn-pegar-impo', inputId: 'input-file-impo', tipo: 'importacion', label: 'Despachos de Importación' },
+    ];
 
-    if (dropzone) {
-      ['dragenter', 'dragover'].forEach(eventName => {
+    const modalPegar = document.getElementById('modal-pegar-texto');
+    const formPegar = document.getElementById('form-pegar-texto');
+    let tipoActivoPegado = null; // qué zona abrió el modal de "Pegar Texto"
+
+    ZONAS_IMPORT.forEach((zona) => {
+      const dropzone = document.getElementById(zona.dropzoneId);
+      const input = document.getElementById(zona.inputId);
+      if (!dropzone || !input) return;
+
+      document.getElementById(zona.btnSelectId)?.addEventListener('click', () => input.click());
+
+      input.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        processFile(file, zona.tipo, zona.label);
+        input.value = '';
+      });
+
+      ['dragenter', 'dragover'].forEach((eventName) => {
         dropzone.addEventListener(eventName, (e) => {
           e.preventDefault();
           dropzone.classList.add('dragover');
         }, false);
       });
 
-      ['dragleave', 'drop'].forEach(eventName => {
+      ['dragleave', 'drop'].forEach((eventName) => {
         dropzone.addEventListener(eventName, (e) => {
           e.preventDefault();
           dropzone.classList.remove('dragover');
@@ -218,21 +239,16 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       dropzone.addEventListener('drop', (e) => {
-        const dt = e.dataTransfer;
-        const files = dt.files;
-        if (files && files.length > 0) {
-          processFile(files[0]);
-        }
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) processFile(files[0], zona.tipo, zona.label);
       });
-    }
 
-    // PEGAR TEXTO / EXCEL MODAL
-    const modalPegar = document.getElementById('modal-pegar-texto');
-    const formPegar = document.getElementById('form-pegar-texto');
-
-    document.getElementById('btn-pegar-texto')?.addEventListener('click', () => {
-      document.getElementById('txt-paste-content').value = '';
-      modalPegar.classList.remove('hidden');
+      document.getElementById(zona.btnPegarId)?.addEventListener('click', () => {
+        tipoActivoPegado = zona.tipo;
+        document.getElementById('modal-pegar-titulo').innerText = `Pegar texto — ${zona.label}`;
+        document.getElementById('txt-paste-content').value = '';
+        modalPegar.classList.remove('hidden');
+      });
     });
 
     document.getElementById('btn-close-pegar')?.addEventListener('click', () => modalPegar.classList.add('hidden'));
@@ -246,24 +262,50 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      const imported = CsvParser.parseArcaCSV(text, document.getElementById('select-tipo-import')?.value || null);
+      const imported = CsvParser.parseArcaCSV(text, tipoActivoPegado);
       if (imported && imported.length > 0) {
         sistemaVouchers = [...sistemaVouchers, ...imported];
         arcaVouchers = [...arcaVouchers, ...imported];
         saveState();
         recalculateAll();
         modalPegar.classList.add('hidden');
-        alert(`Se cargaron correctamente ${imported.length} comprobantes desde el texto ingresado.`);
+        avisarResultadoImport(imported, 'el texto pegado');
       } else {
         alert('No se pudieron reconocer datos de comprobantes. Revisa el formato de separación por coma o punto y coma.');
       }
     });
 
-    function processFile(file) {
+    // Retenciones / Percepciones ARCA (SIRCER) — no fuerza venta/compra, se
+    // detecta por el propio contenido del archivo (retenido/percibido/agente).
+    const inputFileRetenciones = document.getElementById('input-file-retenciones');
+    document.getElementById('btn-import-retenciones-top')?.addEventListener('click', () => {
+      inputFileRetenciones?.click();
+    });
+    inputFileRetenciones?.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      processFile(file, null, 'Retenciones / Percepciones');
+      inputFileRetenciones.value = '';
+    });
+
+    function avisarResultadoImport(imported, origen) {
+      const ventasCount = imported.filter(x => x.tipoOp === 'venta' || x.tipoOp === 'exportacion').length;
+      const comprasCount = imported.filter(x => x.tipoOp === 'compra' || x.tipoOp === 'importacion').length;
+      const todosEnCero = imported.every(v => !v.neto || v.neto === 0);
+
+      if (todosEnCero) {
+        const headerDetectada = imported._headerLineDetectada || '(no disponible)';
+        console.warn('Encabezado detectado en el archivo importado:', headerDetectada);
+        alert(`⚠️ Se cargaron ${imported.length} filas desde ${origen}, pero todas quedaron con importe $0,00.\n\nEsto quiere decir que la app no reconoció la columna de "Importe Neto Gravado" en este archivo.\n\nEncabezado detectado:\n${headerDetectada}\n\nRevisá esa línea y avisale a tu desarrollador con este texto exacto para ajustar la detección de columnas.`);
+      } else {
+        alert(`✅ ¡Importación Exitosa desde "${origen}"!\n\n• Comprobantes cargados: ${imported.length}\n• Compras / Despachos: ${comprasCount}\n• Ventas / Exportaciones: ${ventasCount}`);
+      }
+    }
+
+    function processFile(file, tipoForzado, label) {
       if (!file) return;
       const fileName = file.name.toLowerCase();
       const isExcel = fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
-      const tipoElegido = document.getElementById('select-tipo-import')?.value || null;
 
       const reader = new FileReader();
 
@@ -280,18 +322,14 @@ document.addEventListener('DOMContentLoaded', () => {
             text = event.target.result;
           }
 
-          const imported = CsvParser.parseArcaCSV(text, tipoElegido);
+          const imported = CsvParser.parseArcaCSV(text, tipoForzado);
 
           if (imported && imported.length > 0) {
             sistemaVouchers = [...sistemaVouchers, ...imported];
             arcaVouchers = [...arcaVouchers, ...imported];
             saveState();
             recalculateAll();
-
-            const ventasCount = imported.filter(x => x.tipoOp === 'venta' || x.tipoOp === 'exportacion').length;
-            const comprasCount = imported.filter(x => x.tipoOp === 'compra' || x.tipoOp === 'importacion').length;
-
-            alert(`✅ ¡Importación Exitosa desde "${file.name}"!\n\n• Comprobantes cargados: ${imported.length}\n• Compras / Despachos: ${comprasCount}\n• Ventas / Exportaciones: ${ventasCount}`);
+            avisarResultadoImport(imported, `"${file.name}" (${label || 'archivo'})`);
           } else {
             alert(`⚠️ No se pudieron reconocer registros en "${file.name}".\nVerifica que el archivo contenga comprobantes válidos o las columnas de Mis Comprobantes ARCA.`);
           }
@@ -476,22 +514,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-tpl-compras')?.addEventListener('click', () => ExportEngine.downloadTemplate('compras'));
     document.getElementById('btn-tpl-impo')?.addEventListener('click', () => ExportEngine.downloadTemplate('impo'));
     document.getElementById('btn-tpl-retenciones')?.addEventListener('click', () => ExportEngine.downloadTemplate('retenciones'));
-
-    // Import CSV ARCA & Retenciones
-    document.getElementById('btn-import-arca')?.addEventListener('click', () => {
-      inputFileArca.click();
-    });
-
-    document.getElementById('btn-import-retenciones-top')?.addEventListener('click', () => {
-      inputFileArca.click();
-    });
-
-    inputFileArca?.addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      processFile(file);
-      inputFileArca.value = ''; // Reset input to allow re-uploading same file
-    });
 
     // Re-ejecutar Cruce
     document.getElementById('btn-ejecutar-cruce')?.addEventListener('click', () => {
