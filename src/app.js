@@ -237,7 +237,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      const imported = CsvParser.parseArcaCSV(text);
+      const imported = CsvParser.parseArcaCSV(text, document.getElementById('select-tipo-import')?.value || null);
       if (imported && imported.length > 0) {
         sistemaVouchers = [...sistemaVouchers, ...imported];
         arcaVouchers = [...arcaVouchers, ...imported];
@@ -254,6 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!file) return;
       const fileName = file.name.toLowerCase();
       const isExcel = fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+      const tipoElegido = document.getElementById('select-tipo-import')?.value || null;
 
       const reader = new FileReader();
 
@@ -270,7 +271,7 @@ document.addEventListener('DOMContentLoaded', () => {
             text = event.target.result;
           }
 
-          const imported = CsvParser.parseArcaCSV(text);
+          const imported = CsvParser.parseArcaCSV(text, tipoElegido);
 
           if (imported && imported.length > 0) {
             sistemaVouchers = [...sistemaVouchers, ...imported];

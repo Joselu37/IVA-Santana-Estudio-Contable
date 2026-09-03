@@ -351,11 +351,16 @@ window.CsvParser = (function() {
         tipoOp = 'exportacion';
         alicuota = 0;
         iva = 0;
+      } else if (defaultTipoOp) {
+        // El usuario indicó explícitamente qué es este archivo (venta/compra/importación):
+        // eso pisa cualquier heurística automática por nombre de columna, que es frágil
+        // y puede fallar según el formato exacto del export de ARCA.
+        tipoOp = defaultTipoOp;
       } else if (isImpoFile || tipoDoc.toLowerCase().includes('despacho')) {
         tipoOp = 'importacion';
-      } else if (isVentasFile || defaultTipoOp === 'venta') {
+      } else if (isVentasFile) {
         tipoOp = 'venta';
-      } else if (isComprasFile || defaultTipoOp === 'compra') {
+      } else if (isComprasFile) {
         tipoOp = 'compra';
       }
 

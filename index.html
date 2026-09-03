@@ -101,6 +101,20 @@
 
       <!-- TAB 1: COMPROBANTES Y CARGA -->
       <div id="tab-comprobantes" class="tab-content active">
+        <div class="import-type-selector" style="margin-bottom:0.75rem;">
+          <label for="select-tipo-import" style="font-weight:600; margin-right:0.5rem;">
+            <i class="ri-price-tag-3-line"></i> ¿Qué archivo estás por cargar?
+          </label>
+          <select id="select-tipo-import" class="btn btn-outline btn-sm" style="min-width:280px;">
+            <option value="">Detectar automáticamente (puede fallar)</option>
+            <option value="venta">Comprobantes EMITIDOS (Ventas → Débito Fiscal)</option>
+            <option value="compra">Comprobantes RECIBIDOS (Compras → Crédito Fiscal)</option>
+            <option value="importacion">Despachos de Importación SIM (Aduana)</option>
+          </select>
+          <span style="display:block; font-size:0.8rem; color:#94a3b8; margin-top:0.25rem;">
+            Elegí el tipo antes de arrastrar o pegar el archivo — así la app no tiene que adivinar si es venta o compra.
+          </span>
+        </div>
         <div class="dropzone-box" id="dropzone-arca">
           <div class="dropzone-content">
             <i class="ri-upload-cloud-2-line dropzone-icon"></i>
