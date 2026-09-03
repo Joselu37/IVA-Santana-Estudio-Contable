@@ -8,6 +8,13 @@ document.addEventListener('DOMContentLoaded', () => {
   let contribuyente = { ...MockData.defaultContribuyente };
   let sistemaVouchers = [...MockData.defaultSistemaVouchers];
   let arcaVouchers = [...MockData.defaultArcaVouchers];
+
+  // Clave de almacenamiento CANÓNICA: siempre en base a los dígitos del CUIT,
+  // sin importar si en pantalla se guardó/escribió con o sin guiones. Así
+  // "Limpiar Todo", guardar e importar SIEMPRE leen/escriben la misma clave.
+  function cuitKey(cuit) {
+    return String(cuit || '').replace(/\D/g, '');
+  }
   
   // Simulator State
   let simParams = {
@@ -51,9 +58,10 @@ document.addEventListener('DOMContentLoaded', () => {
   function saveState() {
     try {
       localStorage.setItem('iva_contribuyente', JSON.stringify(contribuyente));
-      if (contribuyente.cuit) {
-        localStorage.setItem('iva_sys_' + contribuyente.cuit, JSON.stringify(sistemaVouchers));
-        localStorage.setItem('iva_arca_' + contribuyente.cuit, JSON.stringify(arcaVouchers));
+      const key = cuitKey(contribuyente.cuit);
+      if (key) {
+        localStorage.setItem('iva_sys_' + key, JSON.stringify(sistemaVouchers));
+        localStorage.setItem('iva_arca_' + key, JSON.stringify(arcaVouchers));
       }
     } catch(e) {
       console.warn('LocalStorage save error:', e);
@@ -68,8 +76,9 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('header-razon-social').innerText = contribuyente.razon;
         document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
 
-        const savedSys = localStorage.getItem('iva_sys_' + contribuyente.cuit);
-        const savedArca = localStorage.getItem('iva_arca_' + contribuyente.cuit);
+        const key = cuitKey(contribuyente.cuit);
+        const savedSys = localStorage.getItem('iva_sys_' + key);
+        const savedArca = localStorage.getItem('iva_arca_' + key);
 
         if (savedSys) sistemaVouchers = JSON.parse(savedSys);
         if (savedArca) arcaVouchers = JSON.parse(savedArca);
@@ -342,6 +351,21 @@ document.addEventListener('DOMContentLoaded', () => {
         sistemaVouchers = [];
         arcaVouchers = [];
         saveState();
+
+        // Barrido de seguridad: por versiones anteriores del guardado, podían
+        // quedar claves de este mismo CUIT con distinto formato (con/sin guiones).
+        // Las eliminamos todas para que no vuelva a aparecer data vieja al recargar.
+        try {
+          const digitos = cuitKey(contribuyente.cuit);
+          Object.keys(localStorage).forEach((k) => {
+            if (!/^iva_(sys|arca)_/.test(k)) return;
+            const kDigitos = k.replace(/^iva_(sys|arca)_/, '').replace(/\D/g, '');
+            if (kDigitos === digitos) localStorage.removeItem(k);
+          });
+        } catch (e) {
+          console.warn('No se pudo limpiar claves antiguas:', e);
+        }
+
         recalculateAll();
       }
     });
@@ -418,10 +442,11 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
 
       // Si cambió el CUIT o se seleccionó blanquear
-      if (oldCuit !== newCuit || resetVouchers) {
+      if (cuitKey(oldCuit) !== cuitKey(newCuit) || resetVouchers) {
         // Intentar cargar datos existentes guardados para este nuevo CUIT
-        const savedSys = localStorage.getItem('iva_sys_' + newCuit);
-        const savedArca = localStorage.getItem('iva_arca_' + newCuit);
+        const key = cuitKey(newCuit);
+        const savedSys = localStorage.getItem('iva_sys_' + key);
+        const savedArca = localStorage.getItem('iva_arca_' + key);
 
         if (savedSys && !resetVouchers) {
           sistemaVouchers = JSON.parse(savedSys);

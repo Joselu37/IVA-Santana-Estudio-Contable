@@ -1,112 +1,67 @@
 /**
- * arcaApi.js
- * Conecta los botones "Buscar CUIT en ARCA" / "Consultar ARCA" del index.html
- * con el endpoint del backend (/api/padron/:cuit), que a su vez habla con
- * el webservice de Padrón A13 de ARCA (WSAA + ws_sr_padron_a13).
+ * ArcaApi
+ * Módulo único de consulta de padrón/CUIT. Expone window.ArcaApi.consultarPadron(cuit),
+ * que es lo que consume app.js (barra rápida y modal de configuración).
  *
- * Expone window.ArcaApi.consultarCuit(cuit) para que taxEngine.js / app.js
- * puedan reusarlo al procesar comprobantes.
+ * IMPORTANTE: esto es un MOCK. Reemplazar el cuerpo de consultarPadron() por un fetch
+ * real a tu backend cuando esté disponible (ver README-ARCA-SETUP.md).
+ *
+ * No agregar acá ningún addEventListener sobre los botones de búsqueda de CUIT:
+ * esos ya están manejados centralizadamente en app.js. Tener dos listeners sobre el
+ * mismo botón (uno acá y otro en app.js) desincroniza lo que se ve en pantalla del
+ * estado interno real (contribuyente.cuit) que usa el resto de la app para guardar
+ * y calcular — fue exactamente el bug que causaba que "Limpiar Todo" no se sostuviera.
  */
-(function () {
-  'use strict';
+window.ArcaApi = (function () {
+  function simularPadron(cuitLimpio) {
+    const prefijo = cuitLimpio.substring(0, 2);
+    const cuitFormateado = `${cuitLimpio.substring(0, 2)}-${cuitLimpio.substring(2, 10)}-${cuitLimpio.substring(10)}`;
 
-  function limpiarCuit(cuit) {
-    return String(cuit || '').replace(/[^0-9]/g, '');
-  }
+    let razonSocial = `CONTRIBUYENTE CUIT ${cuitFormateado}`;
+    let condicion = 'Resp. Inscripto';
+    let impuestos = ['IVA'];
 
-  async function consultarCuit(cuit, cuitRepresentada) {
-    const cuitLimpio = limpiarCuit(cuit);
-    if (cuitLimpio.length !== 11) {
-      throw new Error('El CUIT debe tener 11 dígitos.');
-    }
-
-    // cuitRepresentada = a nombre de qué cliente del estudio se hace la consulta
-    // (el CUIT que autorizó al estudio como apoderado del servicio de Padrón).
-    // Si no se pasa, el backend asume que se representa a sí mismo (cuitLimpio).
-    const qs = cuitRepresentada ? `?representada=${limpiarCuit(cuitRepresentada)}` : '';
-    const resp = await fetch(`/api/padron/${cuitLimpio}${qs}`);
-    const data = await resp.json();
-
-    if (!resp.ok) {
-      throw new Error(data.error || `Error consultando ARCA (HTTP ${resp.status})`);
-    }
-    return data.persona;
-  }
-
-  function formatCuit(cuit) {
-    const c = limpiarCuit(cuit);
-    if (c.length !== 11) return cuit;
-    return `${c.slice(0, 2)}-${c.slice(2, 10)}-${c.slice(10)}`;
-  }
-
-  function setLoading(button, loading) {
-    if (!button) return;
-    button.disabled = loading;
-    button.dataset.originalHtml = button.dataset.originalHtml || button.innerHTML;
-    button.innerHTML = loading
-      ? '<i class="ri-loader-4-line ri-spin"></i> Consultando ARCA...'
-      : button.dataset.originalHtml;
-  }
-
-  function mostrarError(mensaje) {
-    // Reemplazar por el sistema de notificaciones del liquidador si existe (app.js / toast, etc.)
-    if (window.mostrarToast) {
-      window.mostrarToast(mensaje, 'error');
+    if (prefijo === '30' || prefijo === '33' || prefijo === '34') {
+      razonSocial = 'LOGÍSTICA & IMPEX S.A.';
+      condicion = 'Resp. Inscripto';
+      impuestos = ['IVA', 'GANANCIAS'];
+    } else if (cuitLimpio === '20123456789') {
+      razonSocial = 'SANTANA ESTUDIO CONTABLE';
+      condicion = 'Resp. Inscripto';
+      impuestos = ['IVA'];
     } else {
-      alert(mensaje);
+      condicion = 'Monotributo';
+      razonSocial = `CONTRIBUYENTE CUIT ${cuitFormateado}`;
+      impuestos = ['MONOTRIBUTO'];
     }
+
+    return { cuitFormateado, razonSocial, condicion, impuestos };
   }
 
-  function actualizarHeaderYConfig(persona) {
-    const razonHeader = document.getElementById('header-razon-social');
-    const cuitHeader = document.getElementById('header-cuit');
-    const razonCfg = document.getElementById('cfg-razon');
-    const cuitCfg = document.getElementById('cfg-cuit');
+  /**
+   * @param {String} cuitBruto - con o sin guiones/espacios
+   * @returns {Promise<{cuit:String, razon:String, condicion:String, impuestos:String[]}>}
+   */
+  function consultarPadron(cuitBruto) {
+    return new Promise((resolve, reject) => {
+      const cuitLimpio = String(cuitBruto || '').replace(/\D/g, '');
+      if (cuitLimpio.length !== 11) {
+        reject(new Error('Ingrese un CUIT válido de 11 dígitos.'));
+        return;
+      }
 
-    if (razonHeader) razonHeader.textContent = persona.razonSocial || '(sin razón social)';
-    if (cuitHeader) {
-      cuitHeader.textContent = `CUIT: ${formatCuit(persona.cuit)} | ${persona.condicionIVA}`;
-    }
-    if (razonCfg) razonCfg.value = persona.razonSocial || '';
-    if (cuitCfg) cuitCfg.value = formatCuit(persona.cuit);
+      // AQUÍ IRÍA EL FETCH REAL A TU BACKEND (Node.js) QUE SE CONECTA A ARCA:
+      // fetch(`/api/arca/padron/${cuitLimpio}`).then(r => r.json()).then(data => resolve({...})).catch(reject);
 
-    // Otros módulos (taxEngine.js, app.js) pueden escuchar este evento para
-    // ajustar cómo se liquida el IVA según la condición del contribuyente
-    // (Resp. Inscripto / Monotributo / Exento, etc.)
-    document.dispatchEvent(new CustomEvent('arca:persona-actualizada', { detail: persona }));
+      const data = simularPadron(cuitLimpio);
+      resolve({
+        cuit: data.cuitFormateado,
+        razon: data.razonSocial,
+        condicion: data.condicion,
+        impuestos: data.impuestos
+      });
+    });
   }
 
-  async function onBuscarClick(inputEl, buttonEl) {
-    const cuit = inputEl ? inputEl.value : null;
-    if (!cuit) {
-      mostrarError('Ingresá un CUIT para consultar.');
-      return;
-    }
-
-    setLoading(buttonEl, true);
-    try {
-      const persona = await consultarCuit(cuit);
-      actualizarHeaderYConfig(persona);
-    } catch (e) {
-      mostrarError(e.message);
-    } finally {
-      setLoading(buttonEl, false);
-    }
-  }
-
-  document.addEventListener('DOMContentLoaded', () => {
-    const quickInput = document.getElementById('quick-cuit-input');
-    const quickBtn = document.getElementById('btn-quick-buscar-cuit');
-    if (quickBtn) {
-      quickBtn.addEventListener('click', () => onBuscarClick(quickInput, quickBtn));
-    }
-
-    const cfgInput = document.getElementById('cfg-cuit');
-    const cfgBtn = document.getElementById('btn-cfg-buscar-padron');
-    if (cfgBtn) {
-      cfgBtn.addEventListener('click', () => onBuscarClick(cfgInput, cfgBtn));
-    }
-  });
-
-  window.ArcaApi = { consultarCuit, formatCuit };
+  return { consultarPadron };
 })();
