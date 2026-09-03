@@ -1,8 +1,8 @@
 /**
  * Universal ARCA / AFIP CSV & TXT Parser (Ultra-Robust Version)
  * Reads:
- * 1. ARCA "Mis Comprobantes Recibidos" (Compras / Crédito Fiscal) CSV/TXT
- * 2. ARCA "Mis Comprobantes Emitidos" (Ventas / Débito Fiscal) CSV/TXT
+ * 1. ARCA "Mis Comprobantes Recibidos" (Compras) CSV/TXT
+ * 2. ARCA "Mis Comprobantes Emitidos" (Ventas / Exportación E) CSV/TXT
  * 3. ARCA "Despachos de Importación SIM" (Aduana) CSV/TXT
  * 4. ARCA "Mis Retenciones / Percepciones" (Deducciones, SIRCER, RG 5339) CSV/TXT
  * 5. DDJJ Formulario F.2002 / LID TXT / F.731 de Períodos Anteriores
@@ -16,11 +16,6 @@ window.CsvParser = (function() {
     let s = String(val).trim().replace(/\$/g, '').replace(/\s/g, '');
     if (!s) return 0;
     
-    // Ignore CUIT / CAE / Nro Documento strings (> 100,000,000 without decimal commas)
-    if (!s.includes(',') && !s.includes('.') && s.length >= 10) {
-      return 0; // It's a CUIT or CAE code!
-    }
-
     if (s.includes(',') && s.includes('.')) {
       if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
         s = s.replace(/\./g, '').replace(',', '.');
@@ -32,8 +27,7 @@ window.CsvParser = (function() {
     }
     
     const num = parseFloat(s);
-    if (isNaN(num) || num > 1000000000) return 0; // Sanity check to prevent CUIT/CAE numbers
-    return num;
+    return isNaN(num) ? 0 : num;
   }
 
   // Helper: Normalize String (removes accents, punctuation, lowercase)
@@ -92,7 +86,7 @@ window.CsvParser = (function() {
   }
 
   /**
-   * Extrae saldos anteriores desde un archivo F.2002 / LID TXT / CSV DDJJ anterior
+   * Extrae saldos anteriores desde un archivo F.2002 / LID TXT / CSV DDJJ anterior (Versión ultra flexible)
    */
   function parseDDJJAnterior(text) {
     if (!text) return null;
@@ -108,11 +102,13 @@ window.CsvParser = (function() {
     lines.forEach(line => {
       const l = normalizeStr(line);
       
+      // Buscar CUIT
       const cuitMatch = line.match(/\b(20|23|27|30|33|34)[\-]?\d{8}[\-]?\d\b/);
       if (cuitMatch && !cuitEncontrado) {
         cuitEncontrado = cuitMatch[0];
       }
 
+      // Saldo Técnico 1er párrafo (AFIP F.2002 / F.731 / LID)
       if (l.includes('saldo tecnico') || l.includes('primer parrafo') || l.includes('1er parrafo') || l.includes('tecnico resultante') || l.includes('saldo a favor primer') || l.includes('st anterior')) {
         const numbers = line.match(/[\d\.\,]+/g);
         if (numbers && numbers.length > 0) {
@@ -121,6 +117,7 @@ window.CsvParser = (function() {
         }
       }
 
+      // Saldo Libre Disponibilidad 2do párrafo
       if (l.includes('libre disponibilidad') || l.includes('segundo parrafo') || l.includes('2do parrafo') || l.includes('saldo libre') || l.includes('saldo a favor segundo') || l.includes('sld anterior')) {
         const numbers = line.match(/[\d\.\,]+/g);
         if (numbers && numbers.length > 0) {
@@ -129,6 +126,23 @@ window.CsvParser = (function() {
         }
       }
     });
+
+    // Si no se encontró por palabras clave pero hay números grandes en la planilla DDJJ
+    if (stAnterior === 0 && sldAnterior === 0) {
+      lines.forEach(line => {
+        const numbers = line.match(/[\d\.\,]{4,}/g);
+        if (numbers) {
+          numbers.forEach(nStr => {
+            const val = parseArgNumber(nStr);
+            if (val > 1000 && stAnterior === 0) {
+              stAnterior = val;
+            } else if (val > 500 && sldAnterior === 0 && val !== stAnterior) {
+              sldAnterior = val;
+            }
+          });
+        }
+      });
+    }
 
     return {
       stAnterior,
@@ -158,7 +172,28 @@ window.CsvParser = (function() {
       delimiter = ',';
     }
 
-    const rawHeaders = firstLine.split(delimiter).map(h => normalizeStr(h));
+    // Algunos exportadores de ARCA agregan una línea de título/período ANTES de
+    // la fila real de encabezados (ej: "Comprobantes Recibidos - Período 08/2026").
+    // Buscamos, dentro de las primeras líneas, cuál es la que realmente contiene
+    // encabezados de columna reconocibles, para no procesarla como si fuera un dato.
+    const HEADER_TOKENS = ['fecha', 'cuit', 'doc', 'neto', 'importe', 'denominacion',
+      'razon social', 'comprobante', 'numero', 'tipo', 'punto de venta', 'pto vta',
+      'alicuota', 'iva', 'total', 'agente', 'regimen', 'despacho', 'aduana'];
+
+    let headerLineIdx = 0;
+    let bestScore = -1;
+    const maxScan = Math.min(lines.length, 10);
+    for (let i = 0; i < maxScan; i++) {
+      const candidateHeaders = lines[i].split(delimiter).map(h => normalizeStr(h));
+      const score = candidateHeaders.reduce((acc, h) => acc + (HEADER_TOKENS.some(t => h.includes(t)) ? 1 : 0), 0);
+      // Requerimos al menos 2 columnas reconocibles para considerarla fila de encabezados real.
+      if (score >= 2 && score > bestScore) {
+        bestScore = score;
+        headerLineIdx = i;
+      }
+    }
+
+    const rawHeaders = lines[headerLineIdx].split(delimiter).map(h => normalizeStr(h));
 
     function findHeaderIdx(patterns) {
       return rawHeaders.findIndex(h => patterns.some(p => h.includes(p)));
@@ -183,20 +218,19 @@ window.CsvParser = (function() {
     const idxRazonGen = findHeaderIdx(['denominacion', 'razon social', 'nombre', 'razon', 'aduana']);
     const idxRazon = idxRazonAgente >= 0 ? idxRazonAgente : (idxRazonEmisor >= 0 ? idxRazonEmisor : (idxRazonReceptor >= 0 ? idxRazonReceptor : idxRazonGen));
 
-    // Explicits para montos (NUNCA tomar CAE ni CUIT)
     const idxNeto = findHeaderIdx(['imp neto gravado', 'neto gravado', 'neto', 'cif neto', 'subtotal']);
     const idxTotal = findHeaderIdx(['imp total', 'monto total', 'total', 'importe total']);
     const idxIva = findHeaderIdx(['iva', 'impuesto liquidado', 'debito fiscal', 'credito fiscal', 'imp iva']);
     const idxAlicuota = findHeaderIdx(['alicuota', 'tasa', 'pct']);
     const idxTributos = findHeaderIdx(['otros tributos', 'percepciones', 'retenciones', 'percepcion', 'retencion', 'importe retenido', 'importe percibido', 'monto retenido', 'monto percibido']);
 
-    const isVentasFile = rawHeaders.some(h => h.includes('receptor') || h.includes('cliente')) || defaultTipoOp === 'venta';
-    const isComprasFile = rawHeaders.some(h => h.includes('emisor') || h.includes('proveedor')) || defaultTipoOp === 'compra';
-    const isImpoFile = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif')) || defaultTipoOp === 'importacion';
+    const isVentasFile = rawHeaders.some(h => h.includes('receptor') || h.includes('cliente'));
+    const isComprasFile = rawHeaders.some(h => h.includes('emisor') || h.includes('proveedor'));
+    const isImpoFile = rawHeaders.some(h => h.includes('despacho') || h.includes('aduana') || h.includes('cif'));
 
     const parsedVouchers = [];
 
-    for (let i = 1; i < lines.length; i++) {
+    for (let i = headerLineIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
 
@@ -230,14 +264,28 @@ window.CsvParser = (function() {
 
       let razon = idxRazon >= 0 ? cols[idxRazon] : (cols[5] || 'Agente / Contribuyente ARCA');
 
-      // Extracción estricta de montos
       let neto = idxNeto >= 0 ? parseArgNumber(cols[idxNeto]) : 0;
       let total = idxTotal >= 0 ? parseArgNumber(cols[idxTotal]) : 0;
       let iva = idxIva >= 0 ? parseArgNumber(cols[idxIva]) : 0;
       let alicuotaExplicit = idxAlicuota >= 0 ? parseArgNumber(cols[idxAlicuota]) : null;
       let retenciones = idxTributos >= 0 ? parseArgNumber(cols[idxTributos]) : (cols[8] ? parseArgNumber(cols[8]) : 0);
 
-      // Si neto es 0 pero vino Imp. Total e IVA
+      let esAduanera = 'no';
+      const lineNorm = normalizeStr(line);
+      if (isMisRetenciones || lineNorm.includes('retencion') || lineNorm.includes('percepcion')) {
+        if (retenciones === 0 && total > 0) {
+          retenciones = total;
+        }
+        if (lineNorm.includes('aduana') || lineNorm.includes('767') || lineNorm.includes('rg 5339')) {
+          esAduanera = 'si';
+          tipoDoc = 'Percepción Aduanera (RG 5339)';
+        } else if (lineNorm.includes('percepcion')) {
+          tipoDoc = 'Constancia Percepción IVA';
+        } else {
+          tipoDoc = 'Certificado Retención IVA';
+        }
+      }
+
       if (neto === 0 && total > 0) {
         if (iva > 0) {
           neto = total - iva - retenciones;
@@ -248,12 +296,43 @@ window.CsvParser = (function() {
         if (neto < 0) neto = total;
       }
 
-      // Si no se encontró Neto por header pero la columna 6 tiene monto neto razonable (< 1,000,000,000)
-      if (neto === 0 && cols[6] && !cols[6].includes('74123') && cols[6].length < 10) {
-        neto = parseArgNumber(cols[6]);
+      if (neto === 0) {
+        const columnasExcluidas = [idxPtoVta, idxNumDesde, idxCuit, idxTipo, idxFecha];
+        const candidatas = cols
+          .map((colVal, cIdx) => ({ colVal, cIdx }))
+          .filter(({ cIdx }) => !columnasExcluidas.includes(cIdx));
+
+        // 1er intento: solo columnas con "cara" de importe real (tienen separador
+        // decimal tipo ",XX" o ".XX" al final). Esto evita agarrar códigos/IDs
+        // largos (CAE, números de despacho, etc.) que son enteros sin decimales.
+        const conDecimales = candidatas.find(({ colVal }) => {
+          const soloDigitos = String(colVal).replace(/\D/g, '');
+          if (soloDigitos.length >= 10) return false; // luce a CUIT/CAE/código, no a plata
+          return /[.,]\d{1,2}$/.test(String(colVal).trim());
+        });
+
+        if (conDecimales) {
+          const valNum = parseArgNumber(conDecimales.colVal);
+          if (valNum > 0) neto = valNum;
+        }
+
+        // 2do intento (fallback genérico anterior), pero siempre bloqueando
+        // cualquier cadena de 10+ dígitos seguidos (códigos/IDs, nunca un monto).
+        if (neto === 0) {
+          candidatas.forEach(({ colVal }) => {
+            if (neto !== 0) return;
+            const soloDigitos = String(colVal).replace(/\D/g, '');
+            if (soloDigitos.length >= 10) return;
+            const valNum = parseArgNumber(colVal);
+            if (valNum > 100) neto = valNum;
+          });
+        }
       }
 
-      // Determinar alícuota
+      if (iva === 0 && neto > 0 && !tipoDoc.includes('Factura E')) {
+        iva = Math.round((neto * 0.21) * 100) / 100;
+      }
+
       let alicuota = 21;
       if (alicuotaExplicit !== null && alicuotaExplicit > 0) {
         alicuota = alicuotaExplicit;
@@ -267,33 +346,17 @@ window.CsvParser = (function() {
         else alicuota = Math.round(calcAli * 10) / 10;
       }
 
-      // DETERMINACIÓN RIGUROSA DE DÉBITO VS CRÉDITO FISCAL
       let tipoOp = 'compra';
-      if (defaultTipoOp) {
-        tipoOp = defaultTipoOp;
-      } else if (tipoDoc.includes('Factura E') || tipoDoc.toLowerCase().includes('export')) {
+      if (tipoDoc.includes('Factura E') || tipoDoc.toLowerCase().includes('export')) {
         tipoOp = 'exportacion';
-      } else if (isImpoFile || tipoDoc.toLowerCase().includes('despacho')) {
-        tipoOp = 'importacion';
-      } else if (isVentasFile) {
-        tipoOp = 'venta';
-      } else if (isComprasFile) {
-        tipoOp = 'compra';
-      }
-
-      if (tipoOp === 'exportacion') {
         alicuota = 0;
         iva = 0;
-      }
-
-      let esAduanera = tipoOp === 'importacion' ? 'si' : 'no';
-      const lineNorm = normalizeStr(line);
-      if (isMisRetenciones || lineNorm.includes('retencion') || lineNorm.includes('percepcion')) {
-        if (retenciones === 0 && total > 0) retenciones = total;
-        if (lineNorm.includes('aduana') || lineNorm.includes('767') || lineNorm.includes('rg 5339')) {
-          esAduanera = 'si';
-          tipoDoc = 'Percepción Aduanera (RG 5339)';
-        }
+      } else if (isImpoFile || tipoDoc.toLowerCase().includes('despacho')) {
+        tipoOp = 'importacion';
+      } else if (isVentasFile || defaultTipoOp === 'venta') {
+        tipoOp = 'venta';
+      } else if (isComprasFile || defaultTipoOp === 'compra') {
+        tipoOp = 'compra';
       }
 
       const ptoClean = String(ptoVta).replace(/\D/g, '').padStart(5, '0');
@@ -314,7 +377,7 @@ window.CsvParser = (function() {
         cf: (tipoOp === 'compra' || tipoOp === 'importacion') ? iva : 0,
         alicuota,
         retenciones,
-        esAduanera
+        esAduanera: esAduanera === 'si' || tipoOp === 'importacion' ? 'si' : 'no'
       });
     }
 

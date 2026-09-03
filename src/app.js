@@ -451,29 +451,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-tpl-impo')?.addEventListener('click', () => ExportEngine.downloadTemplate('impo'));
     document.getElementById('btn-tpl-retenciones')?.addEventListener('click', () => ExportEngine.downloadTemplate('retenciones'));
 
-    let targetTipoOp = null;
-
-    document.getElementById('btn-import-ventas')?.addEventListener('click', () => {
-      targetTipoOp = 'venta';
-      inputFileArca.click();
-    });
-
-    document.getElementById('btn-import-compras')?.addEventListener('click', () => {
-      targetTipoOp = 'compra';
+    // Import CSV ARCA & Retenciones
+    document.getElementById('btn-import-arca')?.addEventListener('click', () => {
       inputFileArca.click();
     });
 
     document.getElementById('btn-import-retenciones-top')?.addEventListener('click', () => {
-      targetTipoOp = 'retencion';
       inputFileArca.click();
     });
 
     inputFileArca?.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      processFile(file, targetTipoOp);
-      inputFileArca.value = '';
-      targetTipoOp = null;
+      processFile(file);
+      inputFileArca.value = ''; // Reset input to allow re-uploading same file
     });
 
     // Re-ejecutar Cruce
@@ -559,6 +550,13 @@ document.addEventListener('DOMContentLoaded', () => {
     liveCf.innerText = formatMoney(summary.cfComputableTotal);
     liveSt.innerText = formatMoney(summary.saldoTecnicoResultante);
     liveRet.innerText = formatMoney(summary.totalPagosACuenta);
+
+    const cantVentas = sistemaVouchers.filter(v => v.tipoOp === 'venta' || v.tipoOp === 'exportacion').length;
+    const cantCompras = sistemaVouchers.filter(v => v.tipoOp === 'compra' || v.tipoOp === 'importacion').length;
+    const liveDfSub = document.getElementById('live-df-sub');
+    const liveCfSub = document.getElementById('live-cf-sub');
+    if (liveDfSub) liveDfSub.innerText = `${cantVentas} comprobantes ventas`;
+    if (liveCfSub) liveCfSub.innerText = `${cantCompras} comprobantes compras · Incluye Impo & Prorrateo`;
 
     if (summary.saldoTecnicoResultante > 0) {
       liveStBadge.className = 'badge-status st-favor';
