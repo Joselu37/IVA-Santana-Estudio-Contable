@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liquidador IVA & Conciliador ARCA - Responsables Inscriptos y Sociedades</title>
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Remix Icons for crisp UI icons -->
+  <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+  <link rel="stylesheet" href="src/css/main.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Bar Navigation & CUIT Header -->
+    <header class="topbar">
+      <div class="brand">
+        <img src="src/assets/santana-logo.png" alt="Santana Estudio Contable" class="brand-logo-img" onerror="this.src='src/assets/santana-logo.svg'">
+        <div class="brand-text">
+          <h1>Santana <span>Liquidador IVA</span></h1>
+          <p class="subtitle">Estudio Contable | Liquidación | Importación & Exportación | Cruce ARCA | DDJJ F.2002</p>
+        </div>
+      </div>
+
+      <div class="contribuyente-selector">
+        <div class="cuit-search-quick">
+          <input type="text" id="quick-cuit-input" placeholder="Ingrese CUIT sin guiones (ej. 30714589629)..." class="input-cuit-quick">
+          <button id="btn-quick-buscar-cuit" class="btn btn-primary btn-sm" title="Consultar Padrón ARCA">
+            <i class="ri-search-eye-line"></i> Buscar CUIT en ARCA
+          </button>
+        </div>
+
+        <div class="cuit-badge">
+          <i class="ri-building-4-line"></i>
+          <div class="cuit-info">
+            <span id="header-razon-social" class="razon-social">LOGÍSTICA & IMPEX S.A.</span>
+            <span id="header-cuit" class="cuit-num">CUIT: 30-71458962-9 | Resp. Inscripto</span>
+          </div>
+        </div>
+        <button id="btn-config-contribuyente" class="btn btn-outline btn-sm">
+          <i class="ri-settings-4-line"></i> Ajustar Período / Saldos
+        </button>
+      </div>
+    </header>
+
+    <!-- LIVE TAX CONDITION BANNER (En Tiempo Real) -->
+    <section class="live-condition-bar">
+      <div class="live-card df">
+        <div class="live-label"><i class="ri-arrow-up-circle-line"></i> Débito Fiscal (DF)</div>
+        <div class="live-val" id="live-df">$0,00</div>
+        <span class="subtext" id="live-df-sub">0 comprobantes ventas</span>
+      </div>
+
+      <div class="live-card cf">
+        <div class="live-label"><i class="ri-arrow-down-circle-line"></i> Crédito Fiscal (CF)</div>
+        <div class="live-val" id="live-cf">$0,00</div>
+        <span class="subtext" id="live-cf-sub">Incluye Impo & Prorrateo</span>
+      </div>
+
+      <div class="live-card saldo-tecnico">
+        <div class="live-label"><i class="ri-scale-line"></i> Saldo Técnico Art. 24</div>
+        <div class="live-val" id="live-saldo-tecnico">$0,00</div>
+        <span class="badge-status" id="live-st-badge">Determinando...</span>
+      </div>
+
+      <div class="live-card retenciones">
+        <div class="live-label"><i class="ri-shield-check-line"></i> Retenc. / Percep. / Impo</div>
+        <div class="live-val" id="live-retenciones">$0,00</div>
+        <span class="subtext">Aduaneras + Locales</span>
+      </div>
+
+      <div class="live-card resultado-final main-result">
+        <div class="live-label"><i class="ri-money-dollar-circle-line"></i> Posición Final Est.</div>
+        <div class="live-val highlight" id="live-posicion-final">$0,00</div>
+        <span class="badge-status" id="live-posicion-badge">Pendiente de cierre</span>
+      </div>
+    </section>
+
+    <!-- MAIN DASHBOARD CONTENT (TABS) -->
+    <main class="main-container">
+      <!-- Tabs Bar -->
+      <nav class="tabs-nav">
+        <button class="tab-btn active" data-tab="tab-comprobantes">
+          <i class="ri-file-list-3-line"></i> 1. Comprobantes & Registros
+        </button>
+        <button class="tab-btn" data-tab="tab-conciliador">
+          <i class="ri-git-merge-line"></i> 2. Conciliador ARCA <span class="badge-count" id="badge-discrepancias">0</span>
+        </button>
+        <button class="tab-btn" data-tab="tab-simulador">
+          <i class="ri-equalizer-line"></i> 3. Simulador "What-If" Pre-Cierre
+        </button>
+        <button class="tab-btn" data-tab="tab-papeles">
+          <i class="ri-article-line"></i> 4. Papeles de Trabajo
+        </button>
+        <button class="tab-btn" data-tab="tab-ddjj">
+          <i class="ri-download-cloud-2-line"></i> 5. Exportar ARCA (F.2002 / LID)
+        </button>
+      </nav>
+
+      <!-- TAB 1: COMPROBANTES Y CARGA -->
+      <div id="tab-comprobantes" class="tab-content active">
+        <div class="import-grid" style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0.85rem; margin-bottom: 1rem;">
+
+          <div class="dropzone-box dropzone-tipo" id="dropzone-emitidos" style="border-color:rgba(16,185,129,0.4);">
+            <div class="dropzone-content">
+              <i class="ri-upload-cloud-2-line dropzone-icon"></i>
+              <strong>Comprobantes EMITIDOS</strong>
+              <p class="dropzone-sub">Ventas → Débito Fiscal. Arrastrá acá el CSV/TXT/Excel de "Mis Comprobantes Emitidos" de ARCA.</p>
+              <input type="file" id="input-file-emitidos" accept=".csv,.txt,.xlsx,.xls" hidden>
+              <button type="button" id="btn-select-emitidos" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
+              <button type="button" id="btn-pegar-emitidos" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto</button>
+            </div>
+          </div>
+
+          <div class="dropzone-box dropzone-tipo" id="dropzone-recibidos" style="border-color:rgba(59,130,246,0.4);">
+            <div class="dropzone-content">
+              <i class="ri-download-cloud-2-line dropzone-icon"></i>
+              <strong>Comprobantes RECIBIDOS</strong>
+              <p class="dropzone-sub">Compras → Crédito Fiscal. Arrastrá acá el CSV/TXT/Excel de "Mis Comprobantes Recibidos" de ARCA.</p>
+              <input type="file" id="input-file-recibidos" accept=".csv,.txt,.xlsx,.xls" hidden>
+              <button type="button" id="btn-select-recibidos" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
+              <button type="button" id="btn-pegar-recibidos" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto</button>
+            </div>
+          </div>
+
+          <div class="dropzone-box dropzone-tipo" id="dropzone-impo" style="border-color:rgba(234,179,8,0.4);">
+            <div class="dropzone-content">
+              <i class="ri-ship-2-line dropzone-icon"></i>
+              <strong>Despachos de Importación</strong>
+              <p class="dropzone-sub">Aduana (SIM) → Crédito Fiscal. Arrastrá acá el CSV/TXT/Excel de Despachos de Importación.</p>
+              <input type="file" id="input-file-impo" accept=".csv,.txt,.xlsx,.xls" hidden>
+              <button type="button" id="btn-select-impo" class="btn btn-outline btn-sm"><i class="ri-folder-open-line"></i> Seleccionar Archivo</button>
+              <button type="button" id="btn-pegar-impo" class="btn btn-outline btn-sm"><i class="ri-clipboard-line"></i> Pegar Texto</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="toolbar">
+          <div class="actions-group">
+            <button id="btn-import-retenciones-top" class="btn btn-secondary">
+              <i class="ri-shield-flash-line"></i> Importar Retenciones / Percepciones ARCA
+            </button>
+            <button id="btn-import-ddjj-top" class="btn btn-outline">
+              <i class="ri-file-history-line"></i> Cargar DDJJ Anterior
+            </button>
+            <button id="btn-nuevo-comprobante" class="btn btn-outline">
+              <i class="ri-add-circle-line"></i> Nuevo Comprobante
+            </button>
+            <button id="btn-descargar-plantillas" class="btn btn-outline">
+              <i class="ri-file-download-line"></i> Descargar Plantillas
+            </button>
+            <button id="btn-limpiar-comprobantes" class="btn btn-outline" style="color:#ef4444; border-color:rgba(239,68,68,0.4);">
+              <i class="ri-delete-bin-line"></i> Limpiar Todo / Blanquear
+            </button>
+            <button id="btn-cargar-demo" class="btn btn-outline">
+              <i class="ri-magic-line"></i> Cargar Caso Demo
+            </button>
+          </div>
+          <div class="search-group">
+            <input type="text" id="filter-search" placeholder="Buscar por CUIT, Razón Social o N° Factura..." class="input-search">
+            <select id="filter-tipo" class="select-filter">
+              <option value="todos">Todos los Tipos</option>
+              <option value="venta">Ventas (Mercado Interno)</option>
+              <option value="exportacion">Exportaciones (Factura E)</option>
+              <option value="compra">Compras Locales</option>
+              <option value="importacion">Despachos de Importación</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="table-comprobantes">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Tipo</th>
+                <th>Comprobante</th>
+                <th>CUIT / Código</th>
+                <th>Emisor / Receptor</th>
+                <th>Gravado ($)</th>
+                <th>Alícuota</th>
+                <th>Débito Fiscal</th>
+                <th>Crédito Fiscal</th>
+                <th>Percep. / Ret.</th>
+                <th>Operación</th>
+                <th>Estado ARCA</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-comprobantes">
+              <!-- Renderizado dinámicamente -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TAB 2: CONCILIADOR ARCA -->
+      <div id="tab-conciliador" class="tab-content">
+        <div class="reconciliation-header">
+          <div class="reconciliation-summary-card">
+            <h3><i class="ri-shield-keyhole-line"></i> Estado de Coincidencia con Registros ARCA</h3>
+            <p>Se realiza el cruce automatizado entre los datos contables del contribuyente y los archivos oficiales descargados de "Mis Comprobantes ARCA" (CSV Ventas/Compras y Despachos de Importación).</p>
+            <div class="recon-stats">
+              <div class="stat-box success">
+                <span class="stat-val" id="recon-stat-ok">0</span>
+                <span class="stat-label">Coinciden perfectamente</span>
+              </div>
+              <div class="stat-box warning">
+                <span class="stat-val" id="recon-stat-diff">0</span>
+                <span class="stat-label">Diferencias de Monto/Alícuota</span>
+              </div>
+              <div class="stat-box danger">
+                <span class="stat-val" id="recon-stat-missing">0</span>
+                <span class="stat-label">No en Libros / Solo en ARCA</span>
+              </div>
+            </div>
+          </div>
+          <div class="reconciliation-actions">
+            <button id="btn-ejecutar-cruce" class="btn btn-primary">
+              <i class="ri-refresh-line"></i> Re-ejecutar Cruce de Datos
+            </button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="table-conciliacion">
+            <thead>
+              <tr>
+                <th>Comprobante</th>
+                <th>CUIT Contraria</th>
+                <th>Monto en Sistema</th>
+                <th>Monto en ARCA</th>
+                <th>Diferencia IVA</th>
+                <th>Categoría Fiscal</th>
+                <th>Diagnóstico & Acción Recomendada</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-conciliacion">
+              <!-- Renderizado dinámicamente -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TAB 3: SIMULADOR PRE-CIERRE -->
+      <div id="tab-simulador" class="tab-content">
+        <div class="simulator-layout">
+          <div class="simulator-controls card">
+            <h3><i class="ri-sound-module-line"></i> Parámetros del Simulador "What-If"</h3>
+            <p class="small-desc">Ajusta variables en tiempo real para optimizar la posición fiscal antes de cerrar la DDJJ.</p>
+
+            <div class="form-group">
+              <label>Prorrateo Crédito Fiscal Indirecto (Art. 13)</label>
+              <div class="range-wrapper">
+                <input type="range" id="sim-prorrateo-range" min="0" max="100" value="100" step="1">
+                <span id="sim-prorrateo-val" class="range-value">100% Computable</span>
+              </div>
+              <small>Ajusta el porcentaje de compras generales aplicable a ventas gravadas/exportación.</small>
+            </div>
+
+            <div class="form-group">
+              <label>Inclusión de Despachos de Importación Varios</label>
+              <label class="toggle-switch">
+                <input type="checkbox" id="sim-incluir-impo" checked>
+                <span class="slider"></span>
+                <span class="toggle-label">Computar IVA Importación del mes ($<span id="sim-impo-monto">0</span>)</span>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label>Cómputo Percepciones Aduaneras (RG 5339 / 2281)</label>
+              <label class="toggle-switch">
+                <input type="checkbox" id="sim-incluir-percep-aduaneras" checked>
+                <span class="slider"></span>
+                <span class="toggle-label">Computar Percepciones de Aduana ($<span id="sim-percep-aduaneras-monto">0</span>)</span>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label>Solicitud de Recupero Exportación (Art. 43)</label>
+              <label class="toggle-switch">
+                <input type="checkbox" id="sim-solicitar-art43" checked>
+                <span class="slider"></span>
+                <span class="toggle-label">Solicitar reintegro por IVA Compras Exportación</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="simulator-preview card">
+            <h3><i class="ri-pie-chart-2-line"></i> Comparativa de Posición Fiscal</h3>
+            <div class="comparison-grid">
+              <div class="comparison-card original">
+                <h4>Liquidación Original</h4>
+                <div class="comp-item"><span>Débito Fiscal:</span> <b id="sim-orig-df">$0,00</b></div>
+                <div class="comp-item"><span>Crédito Fiscal:</span> <b id="sim-orig-cf">$0,00</b></div>
+                <div class="comp-item"><span>Saldo Técnico:</span> <b id="sim-orig-st">$0,00</b></div>
+                <div class="comp-item"><span>Retenc/Percep:</span> <b id="sim-orig-ret">$0,00</b></div>
+                <div class="comp-divider"></div>
+                <div class="comp-item total"><span>Resultado:</span> <b id="sim-orig-res">$0,00</b></div>
+              </div>
+
+              <div class="comparison-card simulated">
+                <h4>Liquidación Simulada</h4>
+                <div class="comp-item"><span>Débito Fiscal:</span> <b id="sim-mod-df">$0,00</b></div>
+                <div class="comp-item"><span>Crédito Fiscal:</span> <b id="sim-mod-cf">$0,00</b></div>
+                <div class="comp-item"><span>Saldo Técnico:</span> <b id="sim-mod-st">$0,00</b></div>
+                <div class="comp-item"><span>Retenc/Percep:</span> <b id="sim-mod-ret">$0,00</b></div>
+                <div class="comp-divider"></div>
+                <div class="comp-item total"><span>Resultado Simulado:</span> <b id="sim-mod-res" class="highlight">$0,00</b></div>
+              </div>
+            </div>
+            <div class="simulation-alert alert-info" id="sim-recommendation">
+              <i class="ri-information-line"></i> Selecciona opciones para simular variaciones de saldo.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: PAPELES DE TRABAJO -->
+      <div id="tab-papeles" class="tab-content">
+        <div class="paper-actions">
+          <button id="btn-export-excel" class="btn btn-outline">
+            <i class="ri-file-excel-line"></i> Descargar Excel (.xlsx / CSV)
+          </button>
+          <button id="btn-print-papeles" class="btn btn-primary">
+            <i class="ri-printer-line"></i> Imprimir / Guardar PDF
+          </button>
+        </div>
+
+        <div class="working-paper-sheet card" id="working-paper-view">
+          <div class="wp-header-brand" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 1.5rem; border-bottom: 2px solid #e2ba65; padding-bottom: 1rem;">
+            <div style="display:flex; align-items:center; gap: 1rem;">
+              <img src="src/assets/santana-logo.png" alt="Santana Estudio Contable" style="height: 55px;" onerror="this.src='src/assets/santana-logo.svg'">
+              <div>
+                <h2 style="margin-bottom:0; font-size:1.4rem; color:#0f172a; font-weight:800;">SANTANA ESTUDIO CONTABLE</h2>
+                <span style="font-size:0.85rem; color:#64748b; font-weight:600;">Papeles de Trabajo Oficiales de Liquidación de IVA</span>
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <span class="badge-status" style="background:#0f172a; color:#e2ba65; border:1px solid #e2ba65; font-size:0.85rem;">F.2002 / LID ARCA</span>
+            </div>
+          </div>
+
+          <div class="wp-header">
+            <h2>PAPEL DE TRABAJO - LIQUIDACIÓN DE IVA</h2>
+            <div class="wp-meta">
+              <div><strong>Contribuyente:</strong> <span id="wp-razon">LOGÍSTICA & IMPEX S.A.</span></div>
+              <div><strong>CUIT:</strong> <span id="wp-cuit">30-71458962-9</span></div>
+              <div><strong>Período Fiscal:</strong> <span id="wp-periodo">Agosto 2026</span></div>
+              <div><strong>Fecha Emisión:</strong> <span id="wp-fecha-hoy">16/08/2026</span></div>
+            </div>
+          </div>
+
+          <hr class="wp-hr">
+
+          <!-- 1. DÉBITO FISCAL -->
+          <section class="wp-section">
+            <h3>1. DÉBITO FISCAL (VENTAS LOCALES Y OPERACIONES)</h3>
+            <table class="wp-table">
+              <thead>
+                <tr>
+                  <th>Concepto / Alícuota</th>
+                  <th class="text-right">Neto Gravado ($)</th>
+                  <th class="text-right">Débito Fiscal ($)</th>
+                </tr>
+              </thead>
+              <tbody id="wp-tbody-df">
+                <!-- Se llena dinámicamente -->
+              </tbody>
+            </table>
+          </section>
+
+          <!-- 2. CRÉDITO FISCAL -->
+          <section class="wp-section">
+            <h3>2. CRÉDITO FISCAL (COMPRAS LOCALES + IMPORTACIONES DESPACHOS)</h3>
+            <table class="wp-table">
+              <thead>
+                <tr>
+                  <th>Concepto / Tipo de Operación</th>
+                  <th class="text-right">Neto Computable ($)</th>
+                  <th class="text-right">Crédito Fiscal ($)</th>
+                </tr>
+              </thead>
+              <tbody id="wp-tbody-cf">
+                <!-- Se llena dinámicamente -->
+              </tbody>
+            </table>
+          </section>
+
+          <!-- 3. EXPOTACIONES Y RECUPERO ART 43 -->
+          <section class="wp-section">
+            <h3>3. OPERACIONES DE EXPORTACIÓN (ART. 43 LEY DE IVA)</h3>
+            <div class="wp-grid-2">
+              <div>Facturación de Exportación (Factura E / Alícuota 0%):</div>
+              <div class="text-right"><strong id="wp-expo-monto">$0,00</strong></div>
+              <div>Crédito Fiscal Vinculado a Exportaciones (Art. 43):</div>
+              <div class="text-right"><strong id="wp-expo-cf-vinculado">$0,00</strong></div>
+            </div>
+          </section>
+
+          <!-- 4. DETERMINACIÓN IMPOSITIVA -->
+          <section class="wp-section highlights-box">
+            <h3>4. DETERMINACIÓN DEL SALDO DEL IMPUESTO</h3>
+            <div class="wp-calc-row">
+              <span>Total Débito Fiscal (A):</span>
+              <strong id="wp-calc-df">$0,00</strong>
+            </div>
+            <div class="wp-calc-row">
+              <span>Total Crédito Fiscal Computable (B):</span>
+              <strong id="wp-calc-cf">($0,00)</strong>
+            </div>
+            <div class="wp-calc-row subtotal">
+              <span>Resultado Subtotal Débito/Crédito:</span>
+              <strong id="wp-calc-subtotal">$0,00</strong>
+            </div>
+            <div class="wp-calc-row">
+              <span>- Saldo Técnico Período Anterior (1er Párrafo Art. 24):</span>
+              <strong id="wp-calc-st-anterior">($0,00)</strong>
+            </div>
+            <div class="wp-calc-row total-st">
+              <span>= SALDO TÉCNICO RESULTANTE (1er Párrafo Art. 24):</span>
+              <strong id="wp-calc-st-final">$0,00</strong>
+            </div>
+            <hr class="wp-hr-sm">
+            <div class="wp-calc-row">
+              <span>- Retenciones IVA Sufridas (SIRCER / Bancarias / Clientes):</span>
+              <strong id="wp-calc-retenciones">($0,00)</strong>
+            </div>
+            <div class="wp-calc-row">
+              <span>- Percepciones IVA Sufridas Locales:</span>
+              <strong id="wp-calc-percepciones">($0,00)</strong>
+            </div>
+            <div class="wp-calc-row">
+              <span>- Percepciones IVA Aduanera / Importación (RG 5339 / 2281):</span>
+              <strong id="wp-calc-percep-aduaneras">($0,00)</strong>
+            </div>
+            <div class="wp-calc-row">
+              <span>- Saldo Libre Disponibilidad Período Anterior (2do Párrafo Art. 24):</span>
+              <strong id="wp-calc-sld-anterior">($0,00)</strong>
+            </div>
+            <div class="wp-calc-row final-result-row">
+              <span id="wp-final-label">POSICIÓN DEFINITIVA A FAVOR / A PAGAR:</span>
+              <strong id="wp-calc-final-res">$0,00</strong>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- TAB 5: EXPORTAR ARCA -->
+      <div id="tab-ddjj" class="tab-content">
+        <div class="arca-export-layout">
+          <div class="arca-card card">
+            <h3><i class="ri-file-code-line"></i> Archivos TXT para Libro de IVA Digital (LID - ARCA)</h3>
+            <p>Generación de archivos de texto plano bajo especificaciones técnicas de la Resolución General ARCA para importación masiva de comprobantes.</p>
+            <div class="arca-buttons">
+              <button id="btn-export-lid-ventas" class="btn btn-outline">
+                <i class="ri-download-line"></i> Descargar TXT Ventas (LID)
+              </button>
+              <button id="btn-export-lid-compras" class="btn btn-outline">
+                <i class="ri-download-line"></i> Descargar TXT Compras (LID)
+              </button>
+              <button id="btn-export-lid-impo" class="btn btn-outline">
+                <i class="ri-download-line"></i> Descargar TXT Despachos Importación
+              </button>
+            </div>
+          </div>
+
+          <div class="arca-card card">
+            <h3><i class="ri-survey-line"></i> Resumen Formulario F.2002 (Mis Aplicaciones Web)</h3>
+            <p>Datos tabulados listos para volcar directamente en la declaración jurada interactiva F.2002 de ARCA.</p>
+            <div class="f2002-preview">
+              <div class="f2002-row">
+                <span>Ventas Gravadas Mercado Interno (Neto):</span>
+                <strong id="f2002-neto-ventas">$0,00</strong>
+              </div>
+              <div class="f2002-row">
+                <span>Débito Fiscal Total:</span>
+                <strong id="f2002-df">$0,00</strong>
+              </div>
+              <div class="f2002-row">
+                <span>Ventas Exportación (Factura E - Exentas/Sin Alícuota):</span>
+                <strong id="f2002-expo-neto">$0,00</strong>
+              </div>
+              <div class="f2002-row">
+                <span>Compras Gravadas Mercado Interno (Neto):</span>
+                <strong id="f2002-neto-compras">$0,00</strong>
+              </div>
+              <div class="f2002-row">
+                <span>Despachos de Importación Definita (Neto):</span>
+                <strong id="f2002-neto-impo">$0,00</strong>
+              </div>
+              <div class="f2002-row">
+                <span>Crédito Fiscal Computable Total:</span>
+                <strong id="f2002-cf">$0,00</strong>
+              </div>
+              <div class="f2002-row highlight">
+                <span>Saldo del Impuesto Resultante F.2002:</span>
+                <strong id="f2002-saldo-final">$0,00</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- MODAL: NUEVO COMPROBANTE -->
+  <div id="modal-comprobante" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modal-title">Agregar Nuevo Comprobante / Despacho</h3>
+        <button class="modal-close" id="btn-close-modal"><i class="ri-close-line"></i></button>
+      </div>
+      <form id="form-comprobante" class="modal-body">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="comp-tipo-op">Tipo de Operación</label>
+            <select id="comp-tipo-op" required>
+              <option value="venta">Venta Mercado Interno</option>
+              <option value="exportacion">Exportación (Factura E)</option>
+              <option value="compra">Compra Mercado Interno</option>
+              <option value="importacion">Despacho de Importación (Aduana)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-fecha">Fecha Comprobante</label>
+            <input type="date" id="comp-fecha" required>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-tipo-doc">Tipo Comprobante</label>
+            <select id="comp-tipo-doc" required>
+              <option value="Factura A">Factura A</option>
+              <option value="Factura B">Factura B</option>
+              <option value="Factura E">Factura E (Exportación)</option>
+              <option value="Despacho Impo">Despacho de Importación SIM</option>
+              <option value="Nota de Crédito A">Nota de Crédito A</option>
+              <option value="Nota de Débito A">Nota de Débito A</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-numero">Pto Venta / Número</label>
+            <input type="text" id="comp-numero" placeholder="00001-00001234" required>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-cuit">CUIT Contraparte / Código Aduana</label>
+            <input type="text" id="comp-cuit" placeholder="30112233445" required>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-razon">Nombre / Razón Social</label>
+            <input type="text" id="comp-razon" placeholder="Proveedor / Cliente S.A." required>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-neto">Monto Neto Gravado ($)</label>
+            <input type="number" step="0.01" id="comp-neto" value="0.00" required>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-alicuota">Alícuota IVA (%)</label>
+            <select id="comp-alicuota">
+              <option value="21">21.0%</option>
+              <option value="10.5">10.5%</option>
+              <option value="27">27.0%</option>
+              <option value="0">0% (Exportación / Exento)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="comp-retenciones">Percepciones / Retenciones ($)</label>
+            <input type="number" step="0.01" id="comp-retenciones" value="0.00">
+          </div>
+
+          <div class="form-group">
+            <label for="comp-es-aduanera">¿Es Percepción IVA Aduanera (RG 5339)?</label>
+            <select id="comp-es-aduanera">
+              <option value="no">No</option>
+              <option value="si">Sí (Aduanera 20%/10%)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="btn-cancel-modal">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar y Recalcular IVA</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: AJUSTE DE CONTRIBUYENTE & SALDOS ANTERIORES -->
+  <div id="modal-config" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Parámetros del Contribuyente y Saldos Anteriores</h3>
+        <button class="modal-close" id="btn-close-config"><i class="ri-close-line"></i></button>
+      </div>
+      <form id="form-config" class="modal-body">
+        <div class="form-group">
+          <label>CUIT Contribuyente</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="cfg-cuit" value="30-71458962-9" required style="flex:1;">
+            <button type="button" id="btn-cfg-buscar-padron" class="btn btn-primary btn-sm"><i class="ri-search-line"></i> Consultar ARCA</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Razón Social / Nombre</label>
+          <input type="text" id="cfg-razon" value="LOGÍSTICA & IMPEX S.A." required>
+        </div>
+        <div class="form-group" style="background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.85rem; border-radius: var(--radius-md);">
+          <label style="color: var(--color-info);">Saldos Período Anterior desde DDJJ F.2002 / LID</label>
+          <button type="button" id="btn-import-ddjj-modal" class="btn btn-outline btn-sm" style="width:100%; margin-top:0.35rem;">
+            <i class="ri-upload-cloud-line"></i> Extraer Saldos desde Archivo DDJJ Anterior
+          </button>
+        </div>
+
+        <div class="form-group">
+          <label>Saldo Técnico del Mes Anterior ($) (1er Párrafo Art. 24)</label>
+          <input type="number" step="0.01" id="cfg-st-anterior" value="150000.00">
+        </div>
+        <div class="form-group">
+          <label>Saldo Libre Disponibilidad del Mes Anterior ($) (2do Párrafo Art. 24)</label>
+          <input type="number" step="0.01" id="cfg-sld-anterior" value="45000.00">
+        </div>
+
+        <div class="form-group" style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239,68,68,0.3); padding: 0.85rem; border-radius: var(--radius-md); margin-top: 1rem;">
+          <label class="toggle-switch" style="margin-bottom: 0;">
+            <input type="checkbox" id="cfg-limpiar-vouchers" checked>
+            <span class="slider"></span>
+            <span class="toggle-label" style="color: #fca5a5; font-size: 0.85rem;">Limpiar/Vaciar comprobantes anteriores al cambiar de CUIT (Iniciar desde cero)</span>
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="btn-cancel-config">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Actualizar Parámetros</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: DESCARGAR PLANTILLAS -->
+  <div id="modal-plantillas" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Descargar Plantillas de Carga (Excel / CSV)</h3>
+        <button class="modal-close" id="btn-close-plantillas"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body">
+        <p class="small-desc" style="margin-bottom: 1.5rem;">Descarga los modelos preformateados para completar tus comprobantes localmente e importarlos directamente al liquidador.</p>
+        
+        <div class="template-options-list" style="display:flex; flex-direction:column; gap:1rem;">
+          <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+            <div>
+              <strong><i class="ri-file-text-line"></i> Plantilla Maestra Unificada (All-in-One)</strong>
+              <div class="small-desc" style="margin-top:0.25rem;">Incluye Ventas, Facturas E (Expo), Compras y Despachos SIM de Importación.</div>
+            </div>
+            <button id="btn-tpl-maestra" class="btn btn-primary btn-sm"><i class="ri-download-line"></i> Descargar CSV</button>
+          </div>
+
+          <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+            <div>
+              <strong><i class="ri-shopping-bag-3-line"></i> Plantilla de Ventas y Exportaciones (Factura E)</strong>
+              <div class="small-desc" style="margin-top:0.25rem;">Modelada para emitidos en mercado interno y clientes del exterior.</div>
+            </div>
+            <button id="btn-tpl-ventas" class="btn btn-outline btn-sm"><i class="ri-download-line"></i> Descargar CSV</button>
+          </div>
+
+          <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+            <div>
+              <strong><i class="ri-shopping-cart-2-line"></i> Plantilla de Compras Locales</strong>
+              <div class="small-desc" style="margin-top:0.25rem;">Para facturas A, B, C, M y notas de crédito de proveedores locales.</div>
+            </div>
+            <button id="btn-tpl-compras" class="btn btn-outline btn-sm"><i class="ri-download-line"></i> Descargar CSV</button>
+          </div>
+
+          <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+            <div>
+              <strong><i class="ri-ship-line"></i> Plantilla de Despachos de Importación (Aduana SIM)</strong>
+              <div class="small-desc" style="margin-top:0.25rem;">Campos específicos para IVA Aduanero y Percepciones RG 5339 / 2281.</div>
+            </div>
+            <button id="btn-tpl-impo" class="btn btn-outline btn-sm"><i class="ri-download-line"></i> Descargar CSV</button>
+          </div>
+
+          <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+            <div>
+              <strong><i class="ri-shield-flash-line"></i> Plantilla de Retenciones y Percepciones (Deducciones / SIRCER / RG 5339)</strong>
+              <div class="small-desc" style="margin-top:0.25rem;">Para retenciones de clientes, retenciones bancarias, SIRCER y percepciones sufrientes.</div>
+            </div>
+            <button id="btn-tpl-retenciones" class="btn btn-outline btn-sm"><i class="ri-download-line"></i> Descargar CSV</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" id="btn-cancel-plantillas">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PEGAR TEXTO / EXCEL -->
+  <div id="modal-pegar-texto" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modal-pegar-titulo">Carga Rápida por Pegado de Texto / Excel</h3>
+        <button class="modal-close" id="btn-close-pegar"><i class="ri-close-line"></i></button>
+      </div>
+      <form id="form-pegar-texto" class="modal-body">
+        <p class="small-desc">Copia las filas desde Excel o el archivo de ARCA y pégalas en el recuadro inferior:</p>
+        <div class="form-group">
+          <textarea id="txt-paste-content" rows="10" placeholder="Ejemplo:
+2026-08-01;Factura A;00001;00012345;30500012344;PROVEEDOR S.A.;500000.00;21.0;0.00" style="width:100%; background:var(--bg-input); color:var(--text-main); font-family:monospace; padding:0.85rem; border:1px solid var(--border-color); border-radius:var(--radius-md);"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="btn-cancel-pegar">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Procesar y Cargar Comprobantes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Hidden File Inputs -->
+  <input type="file" id="input-file-retenciones" accept=".csv,.txt,.xlsx,.xls" style="display:none">
+  <input type="file" id="input-file-ddjj" accept=".csv,.txt,.json,.pdf" style="display:none">
+
+
+  <!-- External CDNs: SheetJS for native .xlsx/.xls support -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- JS Modules -->
+  <script src="src/js/arcaApi.js"></script>
+  <script src="src/js/taxEngine.js"></script>
+  <script src="src/js/arcaReconciler.js"></script>
+  <script src="src/js/csvParser.js"></script>
+  <script src="src/js/exportEngine.js"></script>
+  <script src="src/js/mockData.js"></script>
+  <script src="src/js/app.js"></script>
+</body>
+</html>
