@@ -194,10 +194,35 @@ window.CsvParser = (function() {
     }
 
     const rawHeaders = lines[headerLineIdx].split(delimiter).map(h => normalizeStr(h));
+    const headersOriginal = lines[headerLineIdx].split(delimiter).map(h => h.trim());
 
     function findHeaderIdx(patterns) {
       return rawHeaders.findIndex(h => patterns.some(p => h.includes(p)));
     }
+
+    // ===== DETECCION DEL FORMATO "ANCHO" REAL DE ARCA (Mis Comprobantes) =====
+    // El export real de ARCA no trae una sola columna de "Neto Gravado" + "Alicuota":
+    // trae UN PAR de columnas (Neto Grav. IVA X% / IVA X%) POR CADA ALICUOTA posible
+    // (0%, 2,5%, 5%, 10,5%, 21%, 27%), porque una misma factura puede tener partes
+    // gravadas a distintas tasas a la vez. Si detectamos al menos una de estas
+    // columnas, usamos el camino de parseo "ancho" (mas fiel a la realidad).
+    const TASAS_IVA = [0, 2.5, 5, 10.5, 21, 27];
+    function buscarColumnaTasa(conPrefijoNeto, tasa) {
+      const tasaStr = String(tasa).replace('.', '[.,]');
+      const prefijo = conPrefijoNeto ? 'neto\\s*grav\\.?\\s*' : '';
+      const re = new RegExp(`^${prefijo}iva\\s*${tasaStr}\\s*%?$`, 'i');
+      return headersOriginal.findIndex(h => re.test(h.replace(/\s+/g, ' ').trim()));
+    }
+    const columnasTasa = TASAS_IVA.map((tasa) => ({
+      tasa,
+      idxNeto: buscarColumnaTasa(true, tasa),
+      idxIva: buscarColumnaTasa(false, tasa),
+    })).filter((c) => c.idxNeto >= 0 || c.idxIva >= 0);
+
+    const formatoAncho = columnasTasa.length > 0;
+
+    const idxTipoCambio = findHeaderIdx(['tipo cambio', 'tipo de cambio']);
+    const idxMoneda = findHeaderIdx(['moneda']);
 
     const isMisRetenciones = rawHeaders.some(h => h.includes('retenido') || h.includes('percibido') || h.includes('agente') || h.includes('regimen') || h.includes('deduccion'));
 
@@ -205,7 +230,7 @@ window.CsvParser = (function() {
     const idxTipo = findHeaderIdx(['tipo', 'comprobante', 'doc', 'cbte', 'impuesto', 'regimen']);
     const idxPtoVta = findHeaderIdx(['punto de venta', 'pto vta', 'pv', 'punto vta']);
     const idxNumDesde = findHeaderIdx(['numero desde', 'nro desde', 'numero', 'num', 'cbte nro', 'nro comprobante']);
-    
+
     const idxCuitAgente = findHeaderIdx(['cuit agente', 'nro doc agente', 'doc agente']);
     const idxCuitEmisor = findHeaderIdx(['nro doc emisor', 'doc emisor', 'cuit emisor']);
     const idxCuitReceptor = findHeaderIdx(['nro doc receptor', 'doc receptor', 'cuit receptor']);
@@ -253,6 +278,7 @@ window.CsvParser = (function() {
 
       let tipoDocRaw = idxTipo >= 0 ? cols[idxTipo] : cols[1];
       let tipoDoc = parseTipoDoc(tipoDocRaw);
+      const esNotaCredito = /nota de cr[ée]dito/i.test(tipoDoc);
 
       let ptoVta = idxPtoVta >= 0 ? cols[idxPtoVta] : (cols[2] || '00001');
       let numero = idxNumDesde >= 0 ? cols[idxNumDesde] : (cols[3] || '00000001');
@@ -265,13 +291,78 @@ window.CsvParser = (function() {
 
       let razon = idxRazon >= 0 ? cols[idxRazon] : (cols[5] || 'Agente / Contribuyente ARCA');
 
+      const ptoClean = String(ptoVta).replace(/\D/g, '').padStart(5, '0');
+      const numClean = String(numero).replace(/\D/g, '').padStart(8, '0');
+      const fullNumero = (ptoClean !== '00000' && numClean !== '00000000') ? `${ptoClean}-${numClean}` : String(numero);
+
+      let tipoOp = 'compra';
+      if (tipoDoc.includes('Factura E') || tipoDoc.toLowerCase().includes('export')) {
+        tipoOp = 'exportacion';
+      } else if (defaultTipoOp) {
+        // El usuario indico explicitamente que es este archivo (venta/compra/importacion):
+        // eso pisa cualquier heuristica automatica por nombre de columna, que es fragil
+        // y puede fallar segun el formato exacto del export de ARCA.
+        tipoOp = defaultTipoOp;
+      } else if (isImpoFile || tipoDoc.toLowerCase().includes('despacho')) {
+        tipoOp = 'importacion';
+      } else if (isVentasFile) {
+        tipoOp = 'venta';
+      } else if (isComprasFile) {
+        tipoOp = 'compra';
+      }
+
+      const esAduaneraBase = tipoOp === 'importacion' ? 'si' : 'no';
+
+      if (formatoAncho && tipoOp !== 'exportacion') {
+        // ===== CAMINO "ANCHO": una fila de ARCA puede generar VARIAS filas
+        // internas, una por cada alicuota que tenga montos (0%, 2,5%, 5%,
+        // 10,5%, 21%, 27%), convirtiendo a pesos si la factura esta en
+        // moneda extranjera, e invirtiendo el signo si es Nota de Credito.
+        let tipoCambio = idxTipoCambio >= 0 ? parseArgNumber(cols[idxTipoCambio]) : 1;
+        if (!tipoCambio || tipoCambio <= 0) tipoCambio = 1;
+        const moneda = idxMoneda >= 0 ? String(cols[idxMoneda] || '$').trim() : '$';
+        const signo = esNotaCredito ? -1 : 1;
+
+        columnasTasa.forEach((ct) => {
+          if (ct.tasa === 0) return; // 0% no genera IVA: no aporta a debito/credito fiscal
+          const netoOriginal = ct.idxNeto >= 0 ? parseArgNumber(cols[ct.idxNeto]) : 0;
+          const ivaOriginal = ct.idxIva >= 0 ? parseArgNumber(cols[ct.idxIva]) : 0;
+          if (netoOriginal === 0 && ivaOriginal === 0) return; // esta factura no tiene monto en esta alicuota
+
+          const netoArs = Math.round(netoOriginal * tipoCambio * 100) / 100 * signo;
+          const ivaArs = Math.round(ivaOriginal * tipoCambio * 100) / 100 * signo;
+
+          parsedVouchers.push({
+            id: 'arca_imp_' + Date.now() + '_' + i + '_' + ct.tasa + '_' + Math.random().toString(36).substr(2, 4),
+            fecha,
+            tipoOp,
+            tipoDoc: moneda !== '$' && moneda !== '' ? `${tipoDoc} (${moneda} @ ${tipoCambio})` : tipoDoc,
+            numero: fullNumero,
+            cuit: cuit || '30-00000000-0',
+            razon: razon || 'CONTRIBUYENTE ARCA',
+            neto: netoArs,
+            iva: ivaArs,
+            df: tipoOp === 'venta' ? ivaArs : 0,
+            cf: (tipoOp === 'compra' || tipoOp === 'importacion') ? ivaArs : 0,
+            alicuota: ct.tasa,
+            retenciones: 0,
+            esAduanera: esAduaneraBase
+          });
+        });
+
+        continue; // ya se agregaron las filas de esta factura, pasar a la siguiente linea
+      }
+
+      // ===== CAMINO "ANGOSTO" (formato clasico de 1 columna neto + 1 alicuota):
+      // usado para archivos de retenciones/percepciones, despachos de importacion
+      // con formato simple, plantillas del liquidador, u otros formatos no-ARCA.
       let neto = idxNeto >= 0 ? parseArgNumber(cols[idxNeto]) : 0;
       let total = idxTotal >= 0 ? parseArgNumber(cols[idxTotal]) : 0;
       let iva = idxIva >= 0 ? parseArgNumber(cols[idxIva]) : 0;
       let alicuotaExplicit = idxAlicuota >= 0 ? parseArgNumber(cols[idxAlicuota]) : null;
       let retenciones = idxTributos >= 0 ? parseArgNumber(cols[idxTributos]) : (cols[8] ? parseArgNumber(cols[8]) : 0);
 
-      let esAduanera = 'no';
+      let esAduanera = esAduaneraBase;
       const lineNorm = normalizeStr(line);
       if (isMisRetenciones || lineNorm.includes('retencion') || lineNorm.includes('percepcion')) {
         if (retenciones === 0 && total > 0) {
@@ -279,11 +370,11 @@ window.CsvParser = (function() {
         }
         if (lineNorm.includes('aduana') || lineNorm.includes('767') || lineNorm.includes('rg 5339')) {
           esAduanera = 'si';
-          tipoDoc = 'Percepción Aduanera (RG 5339)';
+          tipoDoc = 'Percepcion Aduanera (RG 5339)';
         } else if (lineNorm.includes('percepcion')) {
-          tipoDoc = 'Constancia Percepción IVA';
+          tipoDoc = 'Constancia Percepcion IVA';
         } else {
-          tipoDoc = 'Certificado Retención IVA';
+          tipoDoc = 'Certificado Retencion IVA';
         }
       }
 
@@ -303,12 +394,9 @@ window.CsvParser = (function() {
           .map((colVal, cIdx) => ({ colVal, cIdx }))
           .filter(({ cIdx }) => !columnasExcluidas.includes(cIdx));
 
-        // 1er intento: solo columnas con "cara" de importe real (tienen separador
-        // decimal tipo ",XX" o ".XX" al final). Esto evita agarrar códigos/IDs
-        // largos (CAE, números de despacho, etc.) que son enteros sin decimales.
         const conDecimales = candidatas.find(({ colVal }) => {
           const soloDigitos = String(colVal).replace(/\D/g, '');
-          if (soloDigitos.length >= 10) return false; // luce a CUIT/CAE/código, no a plata
+          if (soloDigitos.length >= 10) return false;
           return /[.,]\d{1,2}$/.test(String(colVal).trim());
         });
 
@@ -317,8 +405,6 @@ window.CsvParser = (function() {
           if (valNum > 0) neto = valNum;
         }
 
-        // 2do intento (fallback genérico anterior), pero siempre bloqueando
-        // cualquier cadena de 10+ dígitos seguidos (códigos/IDs, nunca un monto).
         if (neto === 0) {
           candidatas.forEach(({ colVal }) => {
             if (neto !== 0) return;
@@ -330,11 +416,11 @@ window.CsvParser = (function() {
         }
       }
 
-      if (iva === 0 && neto > 0 && !tipoDoc.includes('Factura E')) {
+      if (iva === 0 && neto > 0 && tipoOp !== 'exportacion') {
         iva = Math.round((neto * 0.21) * 100) / 100;
       }
 
-      let alicuota = 21;
+      let alicuota = tipoOp === 'exportacion' ? 0 : 21;
       if (alicuotaExplicit !== null && alicuotaExplicit > 0) {
         alicuota = alicuotaExplicit;
       } else if (neto > 0 && iva > 0) {
@@ -347,27 +433,8 @@ window.CsvParser = (function() {
         else alicuota = Math.round(calcAli * 10) / 10;
       }
 
-      let tipoOp = 'compra';
-      if (tipoDoc.includes('Factura E') || tipoDoc.toLowerCase().includes('export')) {
-        tipoOp = 'exportacion';
-        alicuota = 0;
-        iva = 0;
-      } else if (defaultTipoOp) {
-        // El usuario indicó explícitamente qué es este archivo (venta/compra/importación):
-        // eso pisa cualquier heurística automática por nombre de columna, que es frágil
-        // y puede fallar según el formato exacto del export de ARCA.
-        tipoOp = defaultTipoOp;
-      } else if (isImpoFile || tipoDoc.toLowerCase().includes('despacho')) {
-        tipoOp = 'importacion';
-      } else if (isVentasFile) {
-        tipoOp = 'venta';
-      } else if (isComprasFile) {
-        tipoOp = 'compra';
-      }
-
-      const ptoClean = String(ptoVta).replace(/\D/g, '').padStart(5, '0');
-      const numClean = String(numero).replace(/\D/g, '').padStart(8, '0');
-      const fullNumero = (ptoClean !== '00000' && numClean !== '00000000') ? `${ptoClean}-${numClean}` : String(numero);
+      if (tipoOp === 'exportacion') iva = 0;
+      if (esNotaCredito) { neto = -Math.abs(neto); iva = -Math.abs(iva); }
 
       parsedVouchers.push({
         id: 'arca_imp_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 4),
