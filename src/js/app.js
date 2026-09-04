@@ -154,47 +154,98 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-import-ddjj-top')?.addEventListener('click', () => inputFileDdjj?.click());
     document.getElementById('btn-import-ddjj-modal')?.addEventListener('click', () => inputFileDdjj?.click());
 
-    inputFileDdjj?.addEventListener('change', (e) => {
+    async function extraerTextoPdf(arrayBuffer) {
+      const pdfjsLib = window['pdfjs-dist/build/pdf'] || window.pdfjsLib;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const lineasTotales = [];
+
+      for (let numPagina = 1; numPagina <= pdf.numPages; numPagina++) {
+        const pagina = await pdf.getPage(numPagina);
+        const contenido = await pagina.getTextContent();
+
+        // Agrupamos los fragmentos de texto por su posicion vertical (fila),
+        // porque un PDF no tiene "lineas" como un CSV: cada palabra es un
+        // fragmento con su propia coordenada. Sin esto, "Saldo tecnico" y su
+        // importe (que estan en la misma fila visual, en columnas distintas)
+        // quedarian separados y el buscador de palabras clave no los uniria.
+        const filas = {};
+        contenido.items.forEach((item) => {
+          const y = Math.round(item.transform[5]);
+          if (!filas[y]) filas[y] = [];
+          filas[y].push({ x: item.transform[4], str: item.str });
+        });
+
+        Object.keys(filas)
+          .map(Number)
+          .sort((a, b) => b - a) // de arriba hacia abajo
+          .forEach((y) => {
+            const fila = filas[y].sort((a, b) => a.x - b.x).map((f) => f.str).join(' ');
+            if (fila.trim()) lineasTotales.push(fila);
+          });
+      }
+
+      return lineasTotales.join('\n');
+    }
+
+    function aplicarResultadoDdjj(result) {
+      if (result && (result.stAnterior > 0 || result.sldAnterior > 0 || result.cuit)) {
+        if (result.stAnterior > 0) contribuyente.stAnterior = result.stAnterior;
+        if (result.sldAnterior > 0) contribuyente.sldAnterior = result.sldAnterior;
+        if (result.cuit) contribuyente.cuit = result.cuit;
+        if (result.razon) contribuyente.razon = result.razon;
+
+        document.getElementById('header-razon-social').innerText = contribuyente.razon;
+        document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
+
+        saveState();
+        recalculateAll();
+
+        alert(`✅ ¡DDJJ del Período Anterior Procesada Exitosamente!\n\n• Saldo Técnico (1er Párrafo Art. 24): $${contribuyente.stAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}\n• Saldo Libre Disponibilidad (2do Párrafo Art. 24): $${contribuyente.sldAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}`);
+      } else {
+        const stVal = prompt('No se pudieron detectar los saldos automaticamente.\nIngrese el Saldo Tecnico a Favor del periodo anterior ($) (1er Parrafo Art. 24):', contribuyente.stAnterior);
+        const sldVal = prompt('Ingrese el Saldo de Libre Disponibilidad del periodo anterior ($) (2do Parrafo Art. 24):', contribuyente.sldAnterior);
+
+        if (stVal !== null) contribuyente.stAnterior = parseFloat(stVal) || 0;
+        if (sldVal !== null) contribuyente.sldAnterior = parseFloat(sldVal) || 0;
+
+        saveState();
+        recalculateAll();
+        alert('Saldos del periodo anterior actualizados correctamente.');
+      }
+    }
+
+    inputFileDdjj?.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
+      const esPdf = file.name.toLowerCase().endsWith('.pdf');
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const text = event.target.result;
-          const result = CsvParser.parseDDJJAnterior(text);
-
-          if (result && (result.stAnterior > 0 || result.sldAnterior > 0 || result.cuit)) {
-            if (result.stAnterior > 0) contribuyente.stAnterior = result.stAnterior;
-            if (result.sldAnterior > 0) contribuyente.sldAnterior = result.sldAnterior;
-            if (result.cuit) contribuyente.cuit = result.cuit;
-            if (result.razon) contribuyente.razon = result.razon;
-
-            document.getElementById('header-razon-social').innerText = contribuyente.razon;
-            document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
-
-            saveState();
-            recalculateAll();
-
-            alert(`✅ ¡DDJJ del Período Anterior Procesada Exitosamente!\n\n• Saldo Técnico (1er Párrafo Art. 24): $${contribuyente.stAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}\n• Saldo Libre Disponibilidad (2do Párrafo Art. 24): $${contribuyente.sldAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}`);
-          } else {
-            // Si no traía montos automáticos, permitir ingresar los saldos directamente
-            const stVal = prompt('Ingrese el Saldo Técnico a Favor del período anterior ($) (1er Párrafo Art. 24):', contribuyente.stAnterior);
-            const sldVal = prompt('Ingrese el Saldo de Libre Disponibilidad del período anterior ($) (2do Párrafo Art. 24):', contribuyente.sldAnterior);
-
-            if (stVal !== null) contribuyente.stAnterior = parseFloat(stVal) || 0;
-            if (sldVal !== null) contribuyente.sldAnterior = parseFloat(sldVal) || 0;
-
-            saveState();
-            recalculateAll();
-            alert('Saldos del período anterior actualizados correctamente.');
-          }
-        } catch (err) {
-          alert('Error al leer el archivo de la DDJJ anterior: ' + err.message);
+      try {
+        if (esPdf) {
+          const arrayBuffer = await file.arrayBuffer();
+          const texto = await extraerTextoPdf(arrayBuffer);
+          const result = CsvParser.parseDDJJAnterior(texto);
+          aplicarResultadoDdjj(result);
+        } else {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            try {
+              const text = event.target.result;
+              const result = CsvParser.parseDDJJAnterior(text);
+              aplicarResultadoDdjj(result);
+            } catch (err) {
+              alert('Error al leer el archivo de la DDJJ anterior: ' + err.message);
+            }
+          };
+          reader.readAsText(file, 'ISO-8859-1');
         }
-      };
-      reader.readAsText(file, 'ISO-8859-1');
-      inputFileDdjj.value = '';
+      } catch (err) {
+        console.error(err);
+        alert('❌ No se pudo leer el PDF de la DDJJ anterior: ' + err.message + '\nPodes ingresar los saldos manualmente desde "Ajustar Periodo / Saldos".');
+      } finally {
+        inputFileDdjj.value = '';
+      }
     });
 
     // ===== CARGA POR TIPO EXPLÍCITO: EMITIDOS / RECIBIDOS / IMPORTACIÓN =====
