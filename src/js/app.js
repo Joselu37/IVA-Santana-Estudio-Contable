@@ -610,7 +610,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sldAnterior: contribuyente.sldAnterior,
         ...simParams
       });
-      ExportEngine.exportWorkingPaperCSV(summary, contribuyente);
+      ExportEngine.exportWorkingPaperCSV(summary, contribuyente, getPeriodoFiscal(sistemaVouchers));
     });
 
     document.getElementById('btn-print-papeles')?.addEventListener('click', () => {
@@ -868,6 +868,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('wp-razon').innerText = contribuyente.razon;
     document.getElementById('wp-cuit').innerText = contribuyente.cuit;
+    document.getElementById('wp-periodo').innerText = getPeriodoFiscal(sistemaVouchers);
+    document.getElementById('wp-fecha-hoy').innerText = getFechaHoy();
 
     // 1. Débito Fiscal
     const tbodyDf = document.getElementById('wp-tbody-df');
@@ -941,5 +943,41 @@ document.addEventListener('DOMContentLoaded', () => {
   // Utility Formatter
   function formatMoney(amount) {
     return '$' + (amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  // Determina el Período Fiscal (mes/año) real en base a las fechas de los
+  // comprobantes cargados, en lugar de un valor fijo. Toma el mes/año que
+  // más se repite entre los comprobantes del sistema.
+  const NOMBRES_MES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
+  function getPeriodoFiscal(vouchers) {
+    const conteo = {};
+    (vouchers || []).forEach(v => {
+      if (!v.fecha) return;
+      const key = v.fecha.substring(0, 7); // 'AAAA-MM'
+      if (!/^\d{4}-\d{2}$/.test(key)) return;
+      conteo[key] = (conteo[key] || 0) + 1;
+    });
+
+    const keys = Object.keys(conteo);
+    let periodoKey;
+    if (keys.length > 0) {
+      periodoKey = keys.sort((a, b) => conteo[b] - conteo[a])[0];
+    } else {
+      const hoy = new Date();
+      periodoKey = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    const [anio, mes] = periodoKey.split('-');
+    return `${NOMBRES_MES[parseInt(mes, 10) - 1]} ${anio}`;
+  }
+
+  function getFechaHoy() {
+    const hoy = new Date();
+    const dd = String(hoy.getDate()).padStart(2, '0');
+    const mm = String(hoy.getMonth() + 1).padStart(2, '0');
+    const yyyy = hoy.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
   }
 });
