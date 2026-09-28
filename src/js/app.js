@@ -9,6 +9,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let sistemaVouchers = [...MockData.defaultSistemaVouchers];
   let arcaVouchers = [...MockData.defaultArcaVouchers];
 
+  const NOMBRES_MES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
   // Clave de almacenamiento CANÓNICA: siempre en base a los dígitos del CUIT,
   // sin importar si en pantalla se guardó/escribió con o sin guiones. Así
   // "Limpiar Todo", guardar e importar SIEMPRE leen/escriben la misma clave.
@@ -948,9 +951,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Determina el Período Fiscal (mes/año) real en base a las fechas de los
   // comprobantes cargados, en lugar de un valor fijo. Toma el mes/año que
   // más se repite entre los comprobantes del sistema.
-  const NOMBRES_MES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-
   function getPeriodoFiscal(vouchers) {
     const conteo = {};
     (vouchers || []).forEach(v => {
