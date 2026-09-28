@@ -94,11 +94,11 @@ window.ExportEngine = (function() {
   /**
    * Exports Working Papers as Excel CSV.
    */
-  function exportWorkingPaperCSV(taxSummary, contribuyente) {
+  function exportWorkingPaperCSV(taxSummary, contribuyente, periodoFiscal) {
     let csv = `PAPEL DE TRABAJO LIQUIDACION DE IVA - ARCA\n`;
     csv += `Contribuyente:;${contribuyente.razon}\n`;
     csv += `CUIT:;${contribuyente.cuit}\n`;
-    csv += `Periodo:;Agosto 2026\n\n`;
+    csv += `Periodo:;${periodoFiscal || 'N/D'}\n\n`;
 
     csv += `CONCEPTO;MONTO NETO ($);IVA DÉBITO/CRÉDITO ($)\n`;
     csv += `Ventas Gravadas Mercado Interno;${taxSummary.dfNetoTotal.toFixed(2)};${taxSummary.dfTotal.toFixed(2)}\n`;
