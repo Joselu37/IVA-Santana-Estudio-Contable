@@ -264,7 +264,7 @@ window.CsvParser = (function() {
 
     const idxNeto = findHeaderIdx(['imp neto gravado', 'neto gravado', 'neto', 'cif neto', 'subtotal']);
     const idxTotal = findHeaderIdx(['imp total', 'monto total', 'total', 'importe total']);
-    const idxIva = findHeaderIdx(['iva', 'impuesto liquidado', 'debito fiscal', 'credito fiscal', 'imp iva']);
+    const idxIva = rawHeaders.findIndex(h => !h.includes('alicuota') && ['iva', 'impuesto liquidado', 'debito fiscal', 'credito fiscal', 'imp iva'].some(p => h.includes(p)));
     const idxAlicuota = findHeaderIdx(['alicuota', 'tasa', 'pct']);
     const idxTributos = findHeaderIdx(['otros tributos', 'percepciones', 'retenciones', 'percepcion', 'retencion', 'importe retenido', 'importe percibido', 'monto retenido', 'monto percibido']);
 
@@ -379,7 +379,12 @@ window.CsvParser = (function() {
       let total = idxTotal >= 0 ? parseArgNumber(cols[idxTotal]) : 0;
       let iva = idxIva >= 0 ? parseArgNumber(cols[idxIva]) : 0;
       let alicuotaExplicit = idxAlicuota >= 0 ? parseArgNumber(cols[idxAlicuota]) : null;
-      let retenciones = idxTributos >= 0 ? parseArgNumber(cols[idxTributos]) : (cols[8] ? parseArgNumber(cols[8]) : 0);
+      // Solo usamos la columna 9 como retenciones en archivos SIN encabezados reconocibles (plantilla
+      // simple del liquidador). En los exports de ARCA esa posicion puede ser el Tipo de Cambio u otra cosa.
+      const sinEncabezadosConocidos = idxNeto < 0 && idxIva < 0 && idxTotal < 0;
+      let retenciones = idxTributos >= 0
+        ? parseArgNumber(cols[idxTributos])
+        : (sinEncabezadosConocidos && cols[8] ? parseArgNumber(cols[8]) : 0);
 
       // Facturas en moneda extranjera: pasar todo a pesos con el tipo de cambio del comprobante
       const factor = factorMoneda(cols);
