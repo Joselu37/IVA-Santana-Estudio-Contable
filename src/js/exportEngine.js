@@ -3,83 +3,345 @@
  */
 
 window.ExportEngine = (function() {
-  /**
-   * Generates ARCA Libro IVA Digital (LID) Ventas TXT file.
-   * Fixed length formatting based on ARCA specifications.
-   */
-  function generateLIDVentasTXT(comprobantes) {
-    const ventas = comprobantes.filter(c => c.tipoOp === 'venta' || c.tipoOp === 'exportacion');
-    let txtLines = [];
+  /* ==================================================================
+   * LIBRO IVA DIGITAL (RG 4597) - Diseño de registro oficial ARCA
+   * (Especificaciones rev. 30/07/2025). Archivos de ancho fijo:
+   *   LIBRO_IVA_DIGITAL_VENTAS_CBTE        281 caracteres
+   *   LIBRO_IVA_DIGITAL_VENTAS_ALICUOTAS    62 caracteres
+   *   LIBRO_IVA_DIGITAL_COMPRAS_CBTE       340 caracteres
+   *   LIBRO_IVA_DIGITAL_COMPRAS_ALICUOTAS   84 caracteres
+   *   LIBRO_IVA_DIGITAL_IMPORTACIONES       50 caracteres
+   * Importes: 15 posiciones (13 enteros + 2 decimales, sin separador).
+   * Codificación ANSI (Windows-1252), fin de línea CRLF.
+   * CBTE y ALICUOTAS se generan en el mismo orden.
+   * ================================================================== */
 
-    ventas.forEach(c => {
-      const fechaClean = (c.fecha || '').replace(/-/g, ''); // AAAAMMDD
-      const tipoCod = c.tipoOp === 'exportacion' ? '019' : '001'; // 001=Factura A, 019=Factura E
-      const parts = (c.numero || '00001-00000001').split('-');
-      const ptoVta = (parts[0] || '1').padStart(5, '0');
-      const numComp = (parts[1] || '1').padStart(20, '0');
-      const cuitClean = (c.cuit || '').replace(/\D/g, '').padStart(20, '0');
-      const razon = (c.razon || '').padEnd(30, ' ').substring(0, 30);
-      
-      const netoCents = Math.round(c.neto * 100).toString().padStart(15, '0');
-      const dfCents = Math.round(((c.neto * c.alicuota) / 100) * 100).toString().padStart(15, '0');
+  const LONG = { VTA_CBTE: 281, VTA_ALI: 62, CPA_CBTE: 340, CPA_ALI: 84, IMPO: 50 };
+  const CUIT_ADUANA_DEFAULT = '33693450239'; // DGA - Dirección General de Aduanas
 
-      // ARCA LID Ventas Line format (simplified spec compliant)
-      const line = `${fechaClean}${tipoCod}${ptoVta}${numComp}${numComp}${cuitClean}${razon}${netoCents}${dfCents}`;
-      txtLines.push(line);
+  // Tabla de comprobantes ARCA
+  const TIPOS_CBTE = [
+    [/despacho|importaci/i, 66],
+    [/nota de d[ée]bito a\b|\bnd a\b/i, 2], [/nota de cr[ée]dito a\b|\bnc a\b/i, 3], [/factura a\b/i, 1],
+    [/nota de d[ée]bito b\b|\bnd b\b/i, 7], [/nota de cr[ée]dito b\b|\bnc b\b/i, 8], [/factura b\b/i, 6],
+    [/nota de d[ée]bito c\b|\bnd c\b/i, 12], [/nota de cr[ée]dito c\b|\bnc c\b/i, 13], [/factura c\b/i, 11],
+    [/nota de d[ée]bito e\b|\bnd e\b/i, 20], [/nota de cr[ée]dito e\b|\bnc e\b/i, 21], [/factura e\b/i, 19],
+    [/nota de d[ée]bito m\b|\bnd m\b/i, 52], [/nota de cr[ée]dito m\b|\bnc m\b/i, 53], [/factura m\b/i, 51]
+  ];
+
+  // Códigos de alícuota de IVA ARCA
+  function codigoAlicuota(tasa) {
+    const t = Math.abs(Number(tasa) || 0);
+    if (t === 0) return '0003';
+    if (Math.abs(t - 10.5) < 0.01) return '0004';
+    if (Math.abs(t - 21) < 0.01) return '0005';
+    if (Math.abs(t - 27) < 0.01) return '0006';
+    if (Math.abs(t - 5) < 0.01) return '0008';
+    if (Math.abs(t - 2.5) < 0.01) return '0009';
+    return '0005';
+  }
+
+  function codigoTipoCbte(c) {
+    if (c.tipoOp === 'importacion') return 66;
+    const s = String(c.tipoDoc || '').replace(/\s*\(.*\)\s*$/, '').trim(); // quita "(USD @ 950)"
+    const num = s.match(/^0*(\d{1,3})\b/);
+    if (num) return parseInt(num[1], 10);
+    for (const [re, cod] of TIPOS_CBTE) if (re.test(s)) return cod;
+    return c.tipoOp === 'exportacion' ? 19 : 1;
+  }
+
+  const esClaseBoC = (cod) => [6, 7, 8, 11, 12, 13].includes(cod);
+  const esClaseC = (cod) => [11, 12, 13].includes(cod);
+
+  // Comprobantes que NO van al Libro IVA (retenciones / percepciones sufridas)
+  function esSoloPagoACuenta(c) {
+    const s = String(c.tipoDoc || '');
+    return /retenci|percepci|certificado|constancia|sircer/i.test(s) && !/factura|nota de|despacho/i.test(s);
+  }
+
+  // ---------- Formateadores de campos ----------
+  const num = (v, len) => String(v == null ? '' : v).replace(/\D/g, '').slice(-len).padStart(len, '0');
+  const alfa = (v, len) => quitarNoAnsi(String(v == null ? '' : v)).substring(0, len).padEnd(len, ' ');
+  const imp = (v) => {
+    const cents = Math.round(Math.abs(Number(v) || 0) * 100);
+    return String(cents).padStart(15, '0').slice(-15);
+  };
+  const fecha = (f) => {
+    const s = String(f || '');
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}${m[2]}${m[3]}`;
+    m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+    if (m) return `${m[3]}${m[2]}${m[1]}`;
+    return num(s, 8);
+  };
+  const TC_PESOS = '0001000000'; // 4 enteros + 6 decimales (los importes ya están convertidos a pesos)
+
+  function quitarNoAnsi(s) {
+    // Mantiene caracteres Latin-1 (á, é, ñ, etc.); el resto se translitera o se reemplaza
+    return s.replace(/[\r\n\t]/g, ' ').replace(/[^\x20-\x7E\xA0-\xFF]/g, ch => {
+      const base = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      return /^[\x20-\x7E]$/.test(base) ? base : ' ';
     });
+  }
 
-    return txtLines.join('\r\n');
+  function documento(cuitRaw) {
+    const d = String(cuitRaw || '').replace(/\D/g, '');
+    if (d.length === 11) return { cod: '80', nro: d };          // CUIT
+    if (d.length >= 7 && d.length <= 8) return { cod: '96', nro: d }; // DNI
+    return { cod: '99', nro: '0' };                              // Sin identificar
+  }
+
+  function partirNumero(numero) {
+    const s = String(numero || '');
+    const parts = s.split('-');
+    if (parts.length >= 2) return { ptoVta: num(parts[0], 5), nro: num(parts[1], 20) };
+    const d = s.replace(/\D/g, '');
+    if (d.length > 8) return { ptoVta: num(d.slice(0, d.length - 8), 5), nro: num(d.slice(-8), 20) };
+    return { ptoVta: '00001', nro: num(d || '1', 20) };
+  }
+
+  function normalizarDespacho(numero) {
+    return String(numero || '').toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 16).padEnd(16, ' ');
   }
 
   /**
-   * Generates ARCA Libro IVA Digital (LID) Compras TXT file.
+   * Agrupa las filas internas (una por alícuota) en comprobantes.
+   * El parser puede partir una factura en varias filas, una por cada alícuota.
    */
-  function generateLIDComprasTXT(comprobantes) {
-    const compras = comprobantes.filter(c => c.tipoOp === 'compra');
-    let txtLines = [];
-
-    compras.forEach(c => {
-      const fechaClean = (c.fecha || '').replace(/-/g, '');
-      const tipoCod = '001'; // Factura A
-      const parts = (c.numero || '00001-00000001').split('-');
-      const ptoVta = (parts[0] || '1').padStart(5, '0');
-      const numComp = (parts[1] || '1').padStart(20, '0');
-      const cuitClean = (c.cuit || '').replace(/\D/g, '').padStart(20, '0');
-      const razon = (c.razon || '').padEnd(30, ' ').substring(0, 30);
-      
-      const netoCents = Math.round(c.neto * 100).toString().padStart(15, '0');
-      const cfCents = Math.round(((c.neto * c.alicuota) / 100) * 100).toString().padStart(15, '0');
-
-      const line = `${fechaClean}${tipoCod}${ptoVta}${numComp}${numComp}${cuitClean}${razon}${netoCents}${cfCents}`;
-      txtLines.push(line);
+  function agruparComprobantes(lista) {
+    const map = new Map();
+    lista.forEach(c => {
+      const tipo = codigoTipoCbte(c);
+      const doc = documento(c.cuit);
+      const esImpo = tipo === 66;
+      const pn = esImpo ? { ptoVta: '00000', nro: num('0', 20) } : partirNumero(c.numero);
+      const key = [tipo, pn.ptoVta, pn.nro, esImpo ? normalizarDespacho(c.numero) : '', doc.nro].join('|');
+      if (!map.has(key)) {
+        map.set(key, {
+          fecha: fecha(c.fecha), tipo, ptoVta: pn.ptoVta, nro: pn.nro,
+          despacho: esImpo ? normalizarDespacho(c.numero) : null,
+          doc, razon: c.razon || '', tipoOp: c.tipoOp,
+          percepcionIVA: 0, alicuotas: new Map()
+        });
+      }
+      const g = map.get(key);
+      const neto = Math.abs(Number(c.neto) || 0);
+      const ivaExpl = c.iva != null && c.iva !== '' ? Math.abs(Number(c.iva) || 0) : null;
+      const iva = c.tipoOp === 'exportacion' ? 0
+        : (ivaExpl != null && (ivaExpl > 0 || Number(c.alicuota) === 0) ? ivaExpl
+          : Math.round(neto * (Number(c.alicuota) || 0)) / 100);
+      const codAli = c.tipoOp === 'exportacion' ? '0003' : codigoAlicuota(c.alicuota);
+      const a = g.alicuotas.get(codAli) || { neto: 0, iva: 0 };
+      a.neto += neto; a.iva += iva;
+      g.alicuotas.set(codAli, a);
+      g.percepcionIVA += Math.abs(Number(c.retenciones) || 0);
     });
+    const res = Array.from(map.values());
+    res.forEach(g => {
+      g.alicuotas = Array.from(g.alicuotas.entries())
+        .map(([cod, v]) => ({ cod, neto: Math.round(v.neto * 100) / 100, iva: Math.round(v.iva * 100) / 100 }));
+      g.netoTotal = g.alicuotas.reduce((s, a) => s + a.neto, 0);
+      g.ivaTotal = g.alicuotas.reduce((s, a) => s + a.iva, 0);
+    });
+    res.sort((x, y) => x.fecha.localeCompare(y.fecha) || x.tipo - y.tipo || x.ptoVta.localeCompare(y.ptoVta) || x.nro.localeCompare(y.nro));
+    return res;
+  }
 
-    return txtLines.join('\r\n');
+  function verificarLongitud(lineas, largo, nombre) {
+    lineas.forEach((l, i) => {
+      if (l.length !== largo) console.error(`[LID] ${nombre} línea ${i + 1}: largo ${l.length} (esperado ${largo})`);
+    });
   }
 
   /**
-   * Generates ARCA Libro IVA Digital (LID) Despachos de Importación TXT.
+   * VENTAS: devuelve { cbte, alicuotas } (texto de cada archivo).
    */
-  function generateLIDImportacionesTXT(comprobantes) {
-    const impos = comprobantes.filter(c => c.tipoOp === 'importacion');
-    let txtLines = [];
+  function generarLIDVentas(comprobantes) {
+    const grupos = agruparComprobantes(
+      comprobantes.filter(c => (c.tipoOp === 'venta' || c.tipoOp === 'exportacion') && !esSoloPagoACuenta(c))
+    );
+    const cbte = [], ali = [];
 
-    impos.forEach(c => {
-      const fechaClean = (c.fecha || '').replace(/-/g, '');
-      const despNumero = (c.numero || '').padEnd(16, ' ').substring(0, 16);
-      const netoCents = Math.round(c.neto * 100).toString().padStart(15, '0');
-      const ivaCents = Math.round(((c.neto * c.alicuota) / 100) * 100).toString().padStart(15, '0');
-      const percepCents = Math.round((c.retenciones || 0) * 100).toString().padStart(15, '0');
+    grupos.forEach(g => {
+      const esExpo = [19, 20, 21].includes(g.tipo);
+      const soloCero = g.alicuotas.every(a => a.cod === '0003');
+      let exentas = 0, codOp = ' ';
+      let alis = g.alicuotas;
 
-      const line = `${fechaClean}${despNumero}${netoCents}${ivaCents}${percepCents}`;
-      txtLines.push(line);
+      if (esExpo) {
+        codOp = 'X';
+      } else if (soloCero) {
+        codOp = 'E';
+        exentas = g.netoTotal;
+        alis = [{ cod: '0003', neto: 0, iva: 0 }];
+      }
+      if (esClaseC(g.tipo)) alis = [];
+
+      const total = g.netoTotal + g.ivaTotal;
+
+      cbte.push(
+        g.fecha +                         // 1  Fecha comprobante
+        num(g.tipo, 3) +                  // 2  Tipo de comprobante
+        g.ptoVta +                        // 3  Punto de venta
+        g.nro +                           // 4  Número de comprobante
+        g.nro +                           // 5  Número de comprobante hasta
+        g.doc.cod +                       // 6  Código documento comprador
+        num(g.doc.nro, 20) +              // 7  Número identificación comprador
+        alfa(g.razon, 30) +               // 8  Apellido y nombre / denominación
+        imp(total) +                      // 9  Importe total
+        imp(0) +                          // 10 Conceptos no gravados
+        imp(0) +                          // 11 Percepción a no categorizados
+        imp(exentas) +                    // 12 Operaciones exentas
+        imp(0) +                          // 13 Percepciones impuestos nacionales
+        imp(0) +                          // 14 Percepciones IIBB
+        imp(0) +                          // 15 Percepciones municipales
+        imp(0) +                          // 16 Impuestos internos
+        'PES' +                           // 17 Código de moneda
+        TC_PESOS +                        // 18 Tipo de cambio
+        String(alis.length) +             // 19 Cantidad de alícuotas
+        codOp +                           // 20 Código de operación
+        imp(0) +                          // 21 Otros tributos
+        '00000000' +                      // 22 Fecha vencimiento de pago
+        imp(0)                            // 23 Reintegro Decreto 1043/2016
+      );
+
+      alis.forEach(a => ali.push(
+        num(g.tipo, 3) + g.ptoVta + g.nro + imp(a.neto) + a.cod + imp(a.iva)
+      ));
     });
 
-    return txtLines.join('\r\n');
+    verificarLongitud(cbte, LONG.VTA_CBTE, 'VENTAS_CBTE');
+    verificarLongitud(ali, LONG.VTA_ALI, 'VENTAS_ALICUOTAS');
+    return { cbte: cbte.join('\r\n'), alicuotas: ali.join('\r\n'), cantidad: grupos.length };
   }
 
   /**
-   * Downloads a raw text file in browser.
+   * COMPRAS (incluye despachos de importación tipo 066):
+   * devuelve { cbte, alicuotas, importaciones }.
+   */
+  function generarLIDCompras(comprobantes) {
+    const grupos = agruparComprobantes(
+      comprobantes.filter(c => (c.tipoOp === 'compra' || c.tipoOp === 'importacion') && !esSoloPagoACuenta(c))
+        .filter(c => (Number(c.neto) || 0) !== 0 || (Number(c.iva) || 0) !== 0)
+    );
+    const cbte = [], ali = [], impo = [];
+
+    grupos.forEach(g => {
+      const esImpo = g.tipo === 66;
+      let alis = g.alicuotas;
+      let codOp = ' ';
+      let exentas = 0;
+      let doc = g.doc;
+
+      if (esImpo && doc.cod !== '80') doc = { cod: '80', nro: CUIT_ADUANA_DEFAULT };
+
+      if (esClaseBoC(g.tipo)) {
+        alis = []; // B y C: sin discriminar IVA, cantidad de alícuotas = 0
+      } else if (alis.every(a => a.cod === '0003')) {
+        codOp = esImpo ? 'X' : 'E';
+        if (!esImpo) { exentas = g.netoTotal; alis = [{ cod: '0003', neto: 0, iva: 0 }]; }
+      }
+
+      const ivaComputable = esClaseBoC(g.tipo) ? 0 : g.ivaTotal;
+      const total = g.netoTotal + g.ivaTotal + g.percepcionIVA;
+
+      cbte.push(
+        g.fecha +                                   // 1  Fecha comprobante / oficialización
+        num(g.tipo, 3) +                            // 2  Tipo de comprobante
+        g.ptoVta +                                  // 3  Punto de venta
+        g.nro +                                     // 4  Número de comprobante
+        (esImpo ? g.despacho : ' '.repeat(16)) +    // 5  Despacho de importación
+        doc.cod +                                   // 6  Código documento vendedor
+        num(doc.nro, 20) +                          // 7  Número identificación vendedor
+        alfa(g.razon, 30) +                         // 8  Denominación vendedor
+        imp(total) +                                // 9  Importe total
+        imp(0) +                                    // 10 Conceptos no gravados
+        imp(exentas) +                              // 11 Operaciones exentas
+        imp(g.percepcionIVA) +                      // 12 Percepciones / pagos a cuenta de IVA
+        imp(0) +                                    // 13 Percepciones otros imp. nacionales
+        imp(0) +                                    // 14 Percepciones IIBB
+        imp(0) +                                    // 15 Percepciones municipales
+        imp(0) +                                    // 16 Impuestos internos
+        'PES' +                                     // 17 Código de moneda
+        TC_PESOS +                                  // 18 Tipo de cambio
+        String(alis.length) +                       // 19 Cantidad de alícuotas
+        codOp +                                     // 20 Código de operación
+        imp(ivaComputable) +                        // 21 Crédito fiscal computable
+        imp(0) +                                    // 22 Otros tributos
+        '00000000000' +                             // 23 CUIT emisor / corredor
+        ' '.repeat(30) +                            // 24 Denominación emisor / corredor
+        imp(0) +                                    // 25 IVA comisión
+        imp(0)                                      // 26 Reintegro Dto 1043/2016 / TurIVA
+      );
+
+      alis.forEach(a => {
+        if (esImpo) {
+          impo.push(g.despacho + imp(a.neto) + a.cod + imp(a.iva));
+        } else {
+          ali.push(num(g.tipo, 3) + g.ptoVta + g.nro + doc.cod + num(doc.nro, 20) + imp(a.neto) + a.cod + imp(a.iva));
+        }
+      });
+    });
+
+    verificarLongitud(cbte, LONG.CPA_CBTE, 'COMPRAS_CBTE');
+    verificarLongitud(ali, LONG.CPA_ALI, 'COMPRAS_ALICUOTAS');
+    verificarLongitud(impo, LONG.IMPO, 'IMPORTACIONES');
+    return { cbte: cbte.join('\r\n'), alicuotas: ali.join('\r\n'), importaciones: impo.join('\r\n'), cantidad: grupos.length };
+  }
+
+  // Compatibilidad con la API anterior (devuelven solo el archivo CBTE)
+  function generateLIDVentasTXT(comprobantes) { return generarLIDVentas(comprobantes).cbte; }
+  function generateLIDComprasTXT(comprobantes) { return generarLIDCompras(comprobantes).cbte; }
+  function generateLIDImportacionesTXT(comprobantes) { return generarLIDCompras(comprobantes).importaciones; }
+
+  /**
+   * Codifica texto a bytes ANSI (Windows-1252 / ISO-8859-1), como exige ARCA.
+   * Con UTF-8 las letras con tilde ocupan 2 bytes y rompen el ancho fijo.
+   */
+  function aBytesAnsi(texto) {
+    const s = quitarNoAnsi(String(texto).replace(/\r\n/g, '\n')).replace(/\n/g, '\r\n');
+    const bytes = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xFF;
+    return bytes;
+  }
+
+  /**
+   * Descarga un TXT en formato ANSI listo para importar en Libro IVA Digital.
+   */
+  function downloadTxtAnsi(filename, content) {
+    downloadFile(filename, aBytesAnsi(content), 'text/plain;charset=windows-1252');
+  }
+
+  /**
+   * Descarga los archivos del Libro IVA Digital para el período.
+   * tipo: 'ventas' | 'compras' | 'importaciones'
+   */
+  function exportarLID(tipo, comprobantes, cuit, periodo) {
+    const sufijo = `${String(cuit || '').replace(/\D/g, '')}${periodo ? '_' + periodo : ''}`;
+    const archivos = [];
+    if (tipo === 'ventas') {
+      const r = generarLIDVentas(comprobantes);
+      if (!r.cantidad) return 0;
+      archivos.push([`LIBRO_IVA_DIGITAL_VENTAS_CBTE_${sufijo}.txt`, r.cbte]);
+      archivos.push([`LIBRO_IVA_DIGITAL_VENTAS_ALICUOTAS_${sufijo}.txt`, r.alicuotas]);
+    } else if (tipo === 'compras') {
+      const r = generarLIDCompras(comprobantes);
+      if (!r.cantidad) return 0;
+      archivos.push([`LIBRO_IVA_DIGITAL_COMPRAS_CBTE_${sufijo}.txt`, r.cbte]);
+      archivos.push([`LIBRO_IVA_DIGITAL_COMPRAS_ALICUOTAS_${sufijo}.txt`, r.alicuotas]);
+      if (r.importaciones) archivos.push([`LIBRO_IVA_DIGITAL_IMPORTACIONES_${sufijo}.txt`, r.importaciones]);
+    } else if (tipo === 'importaciones') {
+      const r = generarLIDCompras(comprobantes);
+      if (!r.importaciones) return 0;
+      archivos.push([`LIBRO_IVA_DIGITAL_IMPORTACIONES_${sufijo}.txt`, r.importaciones]);
+    }
+    // Pequeña pausa entre descargas para que el navegador no bloquee las siguientes
+    archivos.forEach(([nombre, contenido], i) => setTimeout(() => downloadTxtAnsi(nombre, contenido), i * 400));
+    return archivos.length;
+  }
+
+  /**
+   * Downloads a raw file in browser (content: string or Uint8Array).
    */
   function downloadFile(filename, content, mimeType = 'text/plain;charset=utf-8;') {
     const blob = new Blob([content], { type: mimeType });
@@ -89,6 +351,7 @@ window.ExportEngine = (function() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(link.href), 2000);
   }
 
   /**
@@ -161,6 +424,10 @@ window.ExportEngine = (function() {
     generateLIDVentasTXT,
     generateLIDComprasTXT,
     generateLIDImportacionesTXT,
+    generarLIDVentas,
+    generarLIDCompras,
+    exportarLID,
+    downloadTxtAnsi,
     downloadFile,
     exportWorkingPaperCSV,
     downloadTemplate
