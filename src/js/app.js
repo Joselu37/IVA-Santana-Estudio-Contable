@@ -620,19 +620,25 @@ document.addEventListener('DOMContentLoaded', () => {
       window.print();
     });
 
+    // Libro IVA Digital (RG 4597): genera los TXT con el diseño de registro oficial de ARCA
+    function periodoLID() {
+      const fechas = sistemaVouchers.map(v => String(v.fecha || '')).filter(f => /^\d{4}-\d{2}/.test(f)).sort();
+      return fechas.length ? fechas[fechas.length - 1].substring(0, 7).replace('-', '') : '';
+    }
+
     document.getElementById('btn-export-lid-ventas')?.addEventListener('click', () => {
-      const txt = ExportEngine.generateLIDVentasTXT(sistemaVouchers);
-      ExportEngine.downloadFile(`LID_VENTAS_${contribuyente.cuit}.txt`, txt);
+      const n = ExportEngine.exportarLID('ventas', sistemaVouchers, contribuyente.cuit, periodoLID());
+      if (!n) alert('No hay comprobantes de ventas para exportar.');
     });
 
     document.getElementById('btn-export-lid-compras')?.addEventListener('click', () => {
-      const txt = ExportEngine.generateLIDComprasTXT(sistemaVouchers);
-      ExportEngine.downloadFile(`LID_COMPRAS_${contribuyente.cuit}.txt`, txt);
+      const n = ExportEngine.exportarLID('compras', sistemaVouchers, contribuyente.cuit, periodoLID());
+      if (!n) alert('No hay comprobantes de compras para exportar.');
     });
 
     document.getElementById('btn-export-lid-impo')?.addEventListener('click', () => {
-      const txt = ExportEngine.generateLIDImportacionesTXT(sistemaVouchers);
-      ExportEngine.downloadFile(`LID_IMPORTACIONES_${contribuyente.cuit}.txt`, txt);
+      const n = ExportEngine.exportarLID('importaciones', sistemaVouchers, contribuyente.cuit, periodoLID());
+      if (!n) alert('No hay despachos de importación para exportar.');
     });
   }
 
