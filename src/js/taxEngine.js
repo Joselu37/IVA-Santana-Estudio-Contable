@@ -60,6 +60,13 @@ window.TaxEngine = (function() {
       return isNaN(n) ? null : n;
     }
 
+    // Clase del comprobante por su nombre ("Factura C", "11 - Factura C", "Nota de Crédito B"...)
+    function claseComprobante(comp) {
+      const t = String(comp.tipoDoc || '').replace(/\s*\(.*\)\s*$/, '').trim();
+      const m = t.match(/\b([ABCEM])$/);
+      return m ? m[1] : '';
+    }
+
     // Iterar comprobantes
     comprobantes.forEach(comp => {
       const neto = parseFloat(comp.neto) || 0;
@@ -73,7 +80,9 @@ window.TaxEngine = (function() {
         
         const dfInf = ivaInformado(comp, 'df');
         let dfComp = dfInf !== null ? dfInf : 0;
-        if (dfInf === null && neto !== 0 && alicuota > 0) {
+        const ventaClaseC = claseComprobante(comp) === 'C'; // Factura C no lleva débito fiscal
+        if (ventaClaseC) dfComp = 0;
+        if (!ventaClaseC && dfInf === null && neto !== 0 && alicuota > 0) {
           dfComp = (neto * alicuota) / 100;
         } else if (dfComp > 0 && neto > 0 && alicuota === 0) {
           alicuota = Math.round((dfComp / neto) * 100 * 10) / 10;
@@ -99,7 +108,10 @@ window.TaxEngine = (function() {
         
         const cfInf = ivaInformado(comp, 'cf');
         let cfComp = cfInf !== null ? cfInf : 0;
-        if (cfInf === null && neto !== 0 && alicuota > 0) {
+        // Facturas B y C recibidas no dan crédito fiscal (aunque hayan quedado guardadas con IVA)
+        const sinCredito = ['B', 'C'].includes(claseComprobante(comp));
+        if (sinCredito) cfComp = 0;
+        if (!sinCredito && cfInf === null && neto !== 0 && alicuota > 0) {
           cfComp = (neto * alicuota) / 100;
         } else if (cfComp > 0 && neto > 0 && alicuota === 0) {
           alicuota = Math.round((cfComp / neto) * 100 * 10) / 10;
