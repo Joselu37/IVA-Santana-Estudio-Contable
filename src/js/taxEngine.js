@@ -43,6 +43,23 @@ window.TaxEngine = (function() {
     let retencionesLocales = 0;
     let percepcionesLocales = 0;
 
+    // Notas de crédito: ARCA (Libro IVA Digital) NO las resta de su propio total, sino que
+    // las suma del otro lado:
+    //  - NC recibidas (compras)  -> "Restitución de crédito fiscal": suman al Débito Fiscal
+    //  - NC emitidas (ventas)    -> "Restitución de débito fiscal": suman al Crédito Fiscal
+    // El saldo final es el mismo, pero así los totales coinciden con los de ARCA.
+    let dfPositivo = 0, restitucionDF = 0;   // ventas
+    let cfPositivo = 0, restitucionCF = 0;   // compras
+
+    // IVA informado en el comprobante. Solo se calcula neto x alícuota si NO vino el dato
+    // (carga manual / plantilla). Si vino en 0 (Factura B/C) se respeta el 0.
+    function ivaInformado(comp, campo) {
+      const v = comp[campo] !== undefined && comp[campo] !== null && comp[campo] !== '' ? comp[campo] : comp.iva;
+      if (v === undefined || v === null || v === '') return null;
+      const n = parseFloat(v);
+      return isNaN(n) ? null : n;
+    }
+
     // Iterar comprobantes
     comprobantes.forEach(comp => {
       const neto = parseFloat(comp.neto) || 0;
@@ -54,8 +71,9 @@ window.TaxEngine = (function() {
       if (comp.tipoOp === 'venta') {
         dfNetoTotal += neto;
         
-        let dfComp = parseFloat(comp.df || comp.iva) || 0;
-        if (dfComp === 0 && neto > 0 && alicuota > 0) {
+        const dfInf = ivaInformado(comp, 'df');
+        let dfComp = dfInf !== null ? dfInf : 0;
+        if (dfInf === null && neto !== 0 && alicuota > 0) {
           dfComp = (neto * alicuota) / 100;
         } else if (dfComp > 0 && neto > 0 && alicuota === 0) {
           alicuota = Math.round((dfComp / neto) * 100 * 10) / 10;
@@ -63,6 +81,7 @@ window.TaxEngine = (function() {
         }
 
         dfTotal += dfComp;
+        if (dfComp >= 0) dfPositivo += dfComp; else restitucionDF += -dfComp;
 
         // Clasificación por alícuota en tabla
         const aliKey = [21, 10.5, 27, 5, 2.5].find(a => Math.abs(a - alicuota) < 1) || 21;
@@ -78,8 +97,9 @@ window.TaxEngine = (function() {
       else if (comp.tipoOp === 'compra') {
         cfNetoTotal += neto;
         
-        let cfComp = parseFloat(comp.cf || comp.iva) || 0;
-        if (cfComp === 0 && neto > 0 && alicuota > 0) {
+        const cfInf = ivaInformado(comp, 'cf');
+        let cfComp = cfInf !== null ? cfInf : 0;
+        if (cfInf === null && neto !== 0 && alicuota > 0) {
           cfComp = (neto * alicuota) / 100;
         } else if (cfComp > 0 && neto > 0 && alicuota === 0) {
           alicuota = Math.round((cfComp / neto) * 100 * 10) / 10;
@@ -87,6 +107,7 @@ window.TaxEngine = (function() {
         }
 
         cfTotalBruto += cfComp;
+        if (cfComp >= 0) cfPositivo += cfComp; else restitucionCF += -cfComp;
 
         const aliKey = [21, 10.5, 27, 5, 2.5].find(a => Math.abs(a - alicuota) < 1) || 21;
         cfPorAlicuota[aliKey] = (cfPorAlicuota[aliKey] || 0) + cfComp;
@@ -100,8 +121,9 @@ window.TaxEngine = (function() {
       else if (comp.tipoOp === 'importacion') {
         if (incluirImpo) {
           impoNetoTotal += neto;
-          let impoIVA = parseFloat(comp.cf || comp.iva) || 0;
-          if (impoIVA === 0 && neto > 0 && alicuota > 0) {
+          const impoInf = ivaInformado(comp, 'cf');
+          let impoIVA = impoInf !== null ? impoInf : 0;
+          if (impoInf === null && neto > 0 && alicuota > 0) {
             impoIVA = (neto * alicuota) / 100;
           }
           impoIVATotal += impoIVA;
@@ -120,7 +142,9 @@ window.TaxEngine = (function() {
     });
 
     // Cómputo Crédito Fiscal con Prorrateo Art. 13
-    const cfComputableLocales = cfTotalBruto * prorrateoPct;
+    // Criterio ARCA: el prorrateo aplica al crédito de compras; las restituciones van completas
+    const cfComputableLocales = cfPositivo * prorrateoPct + restitucionDF;
+    dfTotal = dfPositivo + restitucionCF;
     const cfComputableTotal = cfComputableLocales + (incluirImpo ? impoIVATotal : 0);
 
     // Recupero de IVA Exportador (Art. 43)
@@ -178,6 +202,10 @@ window.TaxEngine = (function() {
       cfNetoTotal,
       cfComputableTotal,
       cfVinculadoExportacion,
+      dfPositivo,
+      cfPositivo,
+      restitucionDF,
+      restitucionCF,
       coefExportacion,
       impoNetoTotal,
       impoIVATotal,
