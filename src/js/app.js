@@ -108,8 +108,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function normNumero(numero) {
     const s = String(numero || '').trim();
-    if (s.includes('-')) {
-      const [pto, nro] = s.split('-');
+    // Separador de punto de venta: guion, barra o espacio ("00002-00000926", "00002/00000926", "2 926")
+    if (/^\s*\d+\s*[-\/ ]\s*\d+\s*$/.test(s)) {
+      const [pto, nro] = s.trim().split(/\s*[-\/ ]\s*/);
       const p = parseInt(String(pto).replace(/\D/g, ''), 10) || 0;
       const n = String(nro).replace(/\D/g, '');
       if (n) return `${p}-${parseInt(n, 10)}`;
