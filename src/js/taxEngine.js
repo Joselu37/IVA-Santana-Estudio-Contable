@@ -109,7 +109,9 @@ window.TaxEngine = (function() {
         const cfInf = ivaInformado(comp, 'cf');
         let cfComp = cfInf !== null ? cfInf : 0;
         // Facturas B y C recibidas no dan crédito fiscal (aunque hayan quedado guardadas con IVA)
-        const sinCredito = ['B', 'C'].includes(claseComprobante(comp));
+        // Certificados de retención / constancias de percepción son pagos a cuenta, no facturas: no dan crédito fiscal
+        const esPagoACuenta = /retenci|percepci|certificado|constancia|sircer/i.test(String(comp.tipoDoc || '')) && !/factura|nota de|despacho/i.test(String(comp.tipoDoc || ''));
+        const sinCredito = ['B', 'C'].includes(claseComprobante(comp)) || esPagoACuenta;
         if (sinCredito) cfComp = 0;
         if (!sinCredito && cfInf === null && neto !== 0 && alicuota > 0) {
           cfComp = (neto * alicuota) / 100;
