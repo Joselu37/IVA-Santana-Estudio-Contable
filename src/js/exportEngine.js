@@ -138,13 +138,60 @@ window.ExportEngine = (function() {
     });
     const res = Array.from(map.values());
     res.forEach(g => {
-      g.alicuotas = Array.from(g.alicuotas.entries())
-        .map(([cod, v]) => ({ cod, neto: Math.round(v.neto * 100) / 100, iva: Math.round(v.iva * 100) / 100 }));
+      g.noGravado = 0;
+      g.alicuotas = ajustarAlicuotas(g, Array.from(g.alicuotas.entries())
+        .map(([cod, v]) => ({ cod, neto: Math.round(v.neto * 100) / 100, iva: Math.round(v.iva * 100) / 100 })));
       g.netoTotal = g.alicuotas.reduce((s, a) => s + a.neto, 0);
       g.ivaTotal = g.alicuotas.reduce((s, a) => s + a.iva, 0);
     });
     res.sort((x, y) => x.fecha.localeCompare(y.fecha) || x.tipo - y.tipo || x.ptoVta.localeCompare(y.ptoVta) || x.nro.localeCompare(y.nro));
     return res;
+  }
+
+  /**
+   * ARCA exige que en cada alícuota: IVA = neto gravado x tasa.
+   * Los exports de "Mis Comprobantes" traen un solo neto y un solo IVA por
+   * comprobante; en tiques de supermercado (21% + 10,5% mezclados) eso no
+   * cuadra con ninguna tasa. Acá se reparte el neto entre las dos tasas que
+   * explican el IVA informado (sin cambiar el IVA total del comprobante).
+   */
+  const TASA_COD = { '0004': 10.5, '0005': 21, '0006': 27, '0008': 5, '0009': 2.5 };
+  const COD_TASA = { 2.5: '0009', 5: '0008', 10.5: '0004', 21: '0005', 27: '0006' };
+  const r2 = (x) => Math.round(x * 100) / 100;
+
+  function ajustarAlicuotas(g, alis) {
+    const out = [];
+    alis.forEach(a => {
+      const tasa = TASA_COD[a.cod];
+      if (!tasa || a.neto <= 0 || Math.abs(r2(a.neto * tasa / 100) - a.iva) <= 0.01) { out.push(a); return; }
+      const efectiva = a.iva / a.neto * 100;
+      // Tasas vecinas que encierran la tasa efectiva
+      const tasas = [10.5, 21, 27];
+      let baja = null, alta = null;
+      for (let i = 0; i < tasas.length - 1; i++) if (efectiva > tasas[i] && efectiva < tasas[i + 1]) { baja = tasas[i]; alta = tasas[i + 1]; }
+      if (baja !== null) {
+        // nA + nB = N ; nA*alta + nB*baja = IVA  ->  nA = (IVA - N*baja) / (alta - baja)
+        const nAlta = r2((a.iva * 100 - a.neto * baja) / (alta - baja));
+        const nBaja = r2(a.neto - nAlta);
+        const ivaAlta = r2(nAlta * alta / 100);
+        const ivaBaja = r2(nBaja * baja / 100);
+        out.push({ cod: COD_TASA[alta], neto: nAlta, iva: ivaAlta });
+        out.push({ cod: COD_TASA[baja], neto: nBaja, iva: ivaBaja });
+      } else if (efectiva < 10.5) {
+        // Parte gravada al 10,5% (o a la tasa del comprobante) y el resto no gravado/exento
+        const t = efectiva < tasa ? tasa : 10.5;
+        const nGrav = r2(a.iva * 100 / t);
+        out.push({ cod: COD_TASA[t], neto: nGrav, iva: r2(nGrav * t / 100) });
+        g.noGravado += r2(a.neto - nGrav);
+      } else {
+        // Tasa efectiva mayor a 27%: se recalcula el IVA sobre el neto
+        out.push({ cod: a.cod, neto: a.neto, iva: r2(a.neto * tasa / 100) });
+      }
+    });
+    // Unifica si quedaron dos renglones con la misma alícuota
+    const m = new Map();
+    out.forEach(a => { const x = m.get(a.cod) || { cod: a.cod, neto: 0, iva: 0 }; x.neto = r2(x.neto + a.neto); x.iva = r2(x.iva + a.iva); m.set(a.cod, x); });
+    return Array.from(m.values()).filter(a => a.neto !== 0 || a.iva !== 0 || a.cod === '0003');
   }
 
   function verificarLongitud(lineas, largo, nombre) {
@@ -177,7 +224,7 @@ window.ExportEngine = (function() {
       }
       if (esClaseC(g.tipo)) alis = [];
 
-      const total = g.netoTotal + g.ivaTotal;
+      const total = g.netoTotal + g.ivaTotal + g.noGravado;
 
       cbte.push(
         g.fecha +                         // 1  Fecha comprobante
@@ -189,7 +236,7 @@ window.ExportEngine = (function() {
         num(g.doc.nro, 20) +              // 7  Número identificación comprador
         alfa(g.razon, 30) +               // 8  Apellido y nombre / denominación
         imp(total) +                      // 9  Importe total
-        imp(0) +                          // 10 Conceptos no gravados
+        imp(g.noGravado) +                // 10 Conceptos no gravados
         imp(0) +                          // 11 Percepción a no categorizados
         imp(exentas) +                    // 12 Operaciones exentas
         imp(0) +                          // 13 Percepciones impuestos nacionales
@@ -242,7 +289,7 @@ window.ExportEngine = (function() {
       }
 
       const ivaComputable = esClaseBoC(g.tipo) ? 0 : g.ivaTotal;
-      const total = g.netoTotal + g.ivaTotal + g.percepcionIVA;
+      const total = g.netoTotal + g.ivaTotal + g.noGravado + g.percepcionIVA;
 
       cbte.push(
         g.fecha +                                   // 1  Fecha comprobante / oficialización
@@ -254,7 +301,7 @@ window.ExportEngine = (function() {
         num(doc.nro, 20) +                          // 7  Número identificación vendedor
         alfa(g.razon, 30) +                         // 8  Denominación vendedor
         imp(total) +                                // 9  Importe total
-        imp(0) +                                    // 10 Conceptos no gravados
+        imp(g.noGravado) +                          // 10 Conceptos no gravados
         imp(exentas) +                              // 11 Operaciones exentas
         imp(g.percepcionIVA) +                      // 12 Percepciones / pagos a cuenta de IVA
         imp(0) +                                    // 13 Percepciones otros imp. nacionales
