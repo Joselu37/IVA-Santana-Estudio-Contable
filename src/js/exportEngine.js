@@ -334,6 +334,29 @@ window.ExportEngine = (function() {
     return { cbte: cbte.join('\r\n'), alicuotas: ali.join('\r\n'), importaciones: impo.join('\r\n'), cantidad: grupos.length };
   }
 
+  /**
+   * Suma el IVA tal como quedó escrito en los TXT (leyendo las líneas generadas),
+   * separando facturas/ND de notas de crédito. Sirve para controlar contra la liquidación.
+   */
+  const CODIGOS_NC = new Set([3, 8, 13, 21, 53, 110, 112, 113, 114, 119]);
+  function totalesTXT(tipo, comprobantes) {
+    const t = { positivo: 0, nc: 0, impo: 0, lineas: 0 };
+    const sumar = (texto, desde, hasta) => (texto ? texto.split('\r\n') : []).forEach(l => {
+      const iva = (+l.slice(desde, hasta) || 0) / 100;
+      if (CODIGOS_NC.has(+l.slice(0, 3))) t.nc += iva; else t.positivo += iva;
+      t.lineas++;
+    });
+    if (tipo === 'ventas') {
+      sumar(generarLIDVentas(comprobantes).alicuotas, 47, 62);
+    } else {
+      const r = generarLIDCompras(comprobantes);
+      if (tipo === 'compras') sumar(r.alicuotas, 69, 84);
+      (r.importaciones ? r.importaciones.split('\r\n') : []).forEach(l => { t.impo += (+l.slice(35, 50) || 0) / 100; t.lineas++; });
+    }
+    ['positivo', 'nc', 'impo'].forEach(k => { t[k] = Math.round(t[k] * 100) / 100; });
+    return t;
+  }
+
   // Compatibilidad con la API anterior (devuelven solo el archivo CBTE)
   function generateLIDVentasTXT(comprobantes) { return generarLIDVentas(comprobantes).cbte; }
   function generateLIDComprasTXT(comprobantes) { return generarLIDCompras(comprobantes).cbte; }
@@ -473,6 +496,7 @@ window.ExportEngine = (function() {
     generarLIDVentas,
     generarLIDCompras,
     exportarLID,
+    totalesTXT,
     downloadTxtAnsi,
     downloadFile,
     exportWorkingPaperCSV,
