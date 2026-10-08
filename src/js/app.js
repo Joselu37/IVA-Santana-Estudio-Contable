@@ -592,7 +592,8 @@ document.addEventListener('DOMContentLoaded', () => {
         numero: document.getElementById('comp-numero').value,
         cuit: document.getElementById('comp-cuit').value,
         razon: document.getElementById('comp-razon').value,
-        neto: parseFloat(document.getElementById('comp-neto').value) || 0,
+        // Las notas de crédito restan: se guardan en negativo aunque se tipeen en positivo
+        neto: (/nota de cr[ée]dito/i.test(document.getElementById('comp-tipo-doc').value) ? -1 : 1) * Math.abs(parseFloat(document.getElementById('comp-neto').value) || 0),
         alicuota: parseFloat(document.getElementById('comp-alicuota').value) || 0,
         retenciones: parseFloat(document.getElementById('comp-retenciones').value) || 0,
         esAduanera: document.getElementById('comp-es-aduanera').value
@@ -751,20 +752,49 @@ document.addEventListener('DOMContentLoaded', () => {
       return fechas.length ? fechas[fechas.length - 1].substring(0, 7).replace('-', '') : '';
     }
 
-    document.getElementById('btn-export-lid-ventas')?.addEventListener('click', () => {
-      const n = ExportEngine.exportarLID('ventas', sistemaVouchers, contribuyente.cuit, periodoLID());
-      if (!n) alert('No hay comprobantes de ventas para exportar.');
-    });
+    // CONTROL CRUZADO: compara el IVA que queda escrito en el TXT con el de la liquidación
+    // de la app, por concepto. Si no coinciden, avisa ANTES de descargar.
+    function controlarTotalesLID(tipo) {
+      const s = TaxEngine.calculateIVA(JSON.parse(JSON.stringify(sistemaVouchers)), {
+        stAnterior: contribuyente.stAnterior, sldAnterior: contribuyente.sldAnterior,
+        ...simParams, prorrateoPct: 100, incluirImpo: true
+      });
+      const t = ExportEngine.totalesTXT(tipo, sistemaVouchers);
+      let filas = [];
+      if (tipo === 'ventas') {
+        filas = [['IVA facturas y notas de débito (débito fiscal)', s.dfPositivo, t.positivo],
+                 ['IVA notas de crédito emitidas', s.restitucionDF, t.nc]];
+      } else if (tipo === 'compras') {
+        filas = [['IVA facturas y notas de débito (crédito fiscal)', s.cfPositivo, t.positivo],
+                 ['IVA notas de crédito recibidas', s.restitucionCF, t.nc],
+                 ['IVA despachos de importación', s.impoIVATotal, t.impo]];
+      } else {
+        filas = [['IVA despachos de importación', s.impoIVATotal, t.impo]];
+      }
+      const tolerancia = Math.max(1, t.lineas * 0.01); // redondeos de centavos por renglón
+      const fmt = (x) => '$' + (Number(x) || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const conDif = filas.filter(([, app, txt]) => Math.abs((app || 0) - (txt || 0)) > tolerancia);
+      const detalle = filas.map(([c, app, txt]) => {
+        const d = (app || 0) - (txt || 0);
+        return `${Math.abs(d) > tolerancia ? '❌' : '✅'} ${c}\n     App: ${fmt(app)}  |  TXT: ${fmt(txt)}${Math.abs(d) > tolerancia ? '  |  Diferencia: ' + fmt(d) : ''}`;
+      }).join('\n\n');
+      return { ok: conDif.length === 0, detalle };
+    }
 
-    document.getElementById('btn-export-lid-compras')?.addEventListener('click', () => {
-      const n = ExportEngine.exportarLID('compras', sistemaVouchers, contribuyente.cuit, periodoLID());
-      if (!n) alert('No hay comprobantes de compras para exportar.');
-    });
+    function exportarConControl(tipo, etiqueta) {
+      const c = controlarTotalesLID(tipo);
+      if (!c.ok) {
+        const seguir = confirm(`⚠️ CONTROL DE TOTALES — ${etiqueta}\n\nEl IVA del archivo TXT NO coincide con la liquidación de la app:\n\n${c.detalle}\n\nCausas habituales: un comprobante con tipo mal cargado (ej. Factura C cargada como A), una nota de crédito cargada en positivo, o una retención/percepción cargada como compra.\n\nRevisalo antes de presentar. ¿Descargar el TXT igual?`);
+        if (!seguir) return;
+      }
+      const n = ExportEngine.exportarLID(tipo, sistemaVouchers, contribuyente.cuit, periodoLID());
+      if (!n) { alert(`No hay comprobantes de ${etiqueta.toLowerCase()} para exportar.`); return; }
+      if (c.ok) alert(`✅ CONTROL DE TOTALES OK — ${etiqueta}\n\nEl IVA del TXT coincide con la liquidación de la app:\n\n${c.detalle}`);
+    }
 
-    document.getElementById('btn-export-lid-impo')?.addEventListener('click', () => {
-      const n = ExportEngine.exportarLID('importaciones', sistemaVouchers, contribuyente.cuit, periodoLID());
-      if (!n) alert('No hay despachos de importación para exportar.');
-    });
+    document.getElementById('btn-export-lid-ventas')?.addEventListener('click', () => exportarConControl('ventas', 'Ventas'));
+    document.getElementById('btn-export-lid-compras')?.addEventListener('click', () => exportarConControl('compras', 'Compras'));
+    document.getElementById('btn-export-lid-impo')?.addEventListener('click', () => exportarConControl('importaciones', 'Importaciones'));
   }
 
   // ----------------------------------------------------
