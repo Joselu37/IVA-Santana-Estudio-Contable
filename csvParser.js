@@ -411,7 +411,20 @@ window.CsvParser = (function() {
         }
       }
 
-      if (neto === 0 && total > 0) {
+      // Comprobantes B y C (y tiques B/C): NO discriminan IVA -> no generan crédito/débito fiscal.
+      // El importe total va completo como neto y el IVA queda en 0 (no se inventa un 21%).
+      const tipoTxt = String(tipoDocRaw || tipoDoc);
+      const esClaseC = /\b(factura|nota de d[ée]bito|nota de cr[ée]dito|tique|recibo)\b.*\bC\b|^0*(11|12|13|15|111|114|117)\b/i.test(tipoTxt) || /\bC$/.test(String(tipoDoc).trim());
+      const esClaseB = /\b(factura|nota de d[ée]bito|nota de cr[ée]dito|tique|recibo)\b.*\bB\b|^0*(6|7|8|9|82|113|116)\b/i.test(tipoTxt) || /\bB$/.test(String(tipoDoc).trim());
+      // C nunca discrimina IVA; B recibida por un Responsable Inscripto no da crédito fiscal.
+      // (Las ventas B SÍ llevan débito fiscal, por eso solo se aplica a compras.)
+      const sinIvaDiscriminado = esClaseC || (esClaseB && tipoOp === 'compra');
+      if (sinIvaDiscriminado) {
+        if (total > 0) neto = total;
+        iva = 0;
+      }
+
+      if (neto === 0 && total > 0 && !sinIvaDiscriminado) {
         if (iva > 0) {
           neto = total - iva - retenciones;
         } else {
@@ -449,7 +462,7 @@ window.CsvParser = (function() {
         }
       }
 
-      if (iva === 0 && neto > 0 && tipoOp !== 'exportacion') {
+      if (iva === 0 && neto > 0 && tipoOp !== 'exportacion' && !sinIvaDiscriminado) {
         iva = Math.round((neto * 0.21) * 100) / 100;
       }
 
