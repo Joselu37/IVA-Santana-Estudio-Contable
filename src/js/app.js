@@ -88,6 +88,80 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) {
       console.warn('LocalStorage load error:', e);
     }
+    // Limpia duplicados que hayan quedado guardados de importaciones anteriores
+    const antes = sistemaVouchers.length + arcaVouchers.length;
+    sistemaVouchers = quitarDuplicados(sistemaVouchers);
+    arcaVouchers = quitarDuplicados(arcaVouchers);
+    if (sistemaVouchers.length + arcaVouchers.length !== antes) saveState();
+  }
+
+  // ----------------------------------------------------
+  // CONTROL DE COMPROBANTES DUPLICADOS
+  // ----------------------------------------------------
+  // Un comprobante se identifica por: operación (venta/compra), tipo de
+  // comprobante, punto de venta + número, CUIT de la contraparte y alícuota
+  // (una factura con varias alícuotas genera una fila por cada una).
+  function normTexto(s) {
+    return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s*\(.*\)\s*$/, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function normNumero(numero) {
+    const s = String(numero || '').trim();
+    if (s.includes('-')) {
+      const [pto, nro] = s.split('-');
+      const p = parseInt(String(pto).replace(/\D/g, ''), 10) || 0;
+      const n = String(nro).replace(/\D/g, '');
+      if (n) return `${p}-${parseInt(n, 10)}`;
+    }
+    return s.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^0+(?=\d)/, '');
+  }
+
+  function claveComprobante(v) {
+    const grupo = (v.tipoOp === 'venta' || v.tipoOp === 'exportacion') ? 'V' : 'C';
+    const ali = Math.round((Number(v.alicuota) || 0) * 100);
+    const base = [grupo, normTexto(v.tipoDoc), normNumero(v.numero), String(v.cuit || '').replace(/\D/g, ''), ali];
+    // Retenciones / percepciones: muchas no traen número propio, se distinguen además por fecha e importe
+    if (/retenci|percepci|certificado|constancia/i.test(String(v.tipoDoc || ''))) {
+      base.push(String(v.fecha || ''), Math.round((Number(v.retenciones) || 0) * 100));
+    }
+    return base.join('|');
+  }
+
+  // Devuelve la lista sin duplicados (conserva la primera aparición)
+  function quitarDuplicados(lista) {
+    const vistos = new Set();
+    return (lista || []).filter(v => {
+      const k = claveComprobante(v);
+      if (vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    });
+  }
+
+  // Agrega 'nuevos' a 'lista' omitiendo los que ya existen (o se repiten en el mismo archivo)
+  function agregarSinDuplicados(lista, nuevos) {
+    const vistos = new Set((lista || []).map(claveComprobante));
+    const agregados = [];
+    let duplicados = 0;
+    (nuevos || []).forEach(v => {
+      const k = claveComprobante(v);
+      if (vistos.has(k)) { duplicados++; return; }
+      vistos.add(k);
+      agregados.push(v);
+    });
+    return { lista: [...(lista || []), ...agregados], agregados, duplicados };
+  }
+
+  // Importa comprobantes a los libros y a la base ARCA sin duplicar
+  function importarComprobantes(imported) {
+    const rSys = agregarSinDuplicados(sistemaVouchers, imported);
+    const rArca = agregarSinDuplicados(arcaVouchers, imported);
+    sistemaVouchers = rSys.lista;
+    arcaVouchers = rArca.lista;
+    const agregados = rSys.agregados;
+    agregados._headerLineDetectada = imported._headerLineDetectada;
+    return { agregados, duplicados: rSys.duplicados };
   }
 
   // ----------------------------------------------------
@@ -318,12 +392,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const imported = CsvParser.parseArcaCSV(text, tipoActivoPegado);
       if (imported && imported.length > 0) {
-        sistemaVouchers = [...sistemaVouchers, ...imported];
-        arcaVouchers = [...arcaVouchers, ...imported];
+        const { agregados, duplicados } = importarComprobantes(imported);
         saveState();
         recalculateAll();
         modalPegar.classList.add('hidden');
-        avisarResultadoImport(imported, 'el texto pegado');
+        avisarResultadoImport(agregados, 'el texto pegado', duplicados);
       } else {
         alert('No se pudieron reconocer datos de comprobantes. Revisa el formato de separación por coma o punto y coma.');
       }
@@ -342,7 +415,12 @@ document.addEventListener('DOMContentLoaded', () => {
       inputFileRetenciones.value = '';
     });
 
-    function avisarResultadoImport(imported, origen) {
+    function avisarResultadoImport(imported, origen, duplicados = 0) {
+      if (imported.length === 0 && duplicados > 0) {
+        alert(`ℹ️ No se agregó nada desde ${origen}: los ${duplicados} comprobantes ya estaban cargados.`);
+        return;
+      }
+      const avisoDup = duplicados > 0 ? `\n• Duplicados omitidos (ya estaban cargados): ${duplicados}` : '';
       const ventasCount = imported.filter(x => x.tipoOp === 'venta' || x.tipoOp === 'exportacion').length;
       const comprasCount = imported.filter(x => x.tipoOp === 'compra' || x.tipoOp === 'importacion').length;
       const todosEnCero = imported.every(v => !v.neto || v.neto === 0);
@@ -352,7 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.warn('Encabezado detectado en el archivo importado:', headerDetectada);
         alert(`⚠️ Se cargaron ${imported.length} filas desde ${origen}, pero todas quedaron con importe $0,00.\n\nEsto quiere decir que la app no reconoció la columna de "Importe Neto Gravado" en este archivo.\n\nEncabezado detectado:\n${headerDetectada}\n\nRevisá esa línea y avisale a tu desarrollador con este texto exacto para ajustar la detección de columnas.`);
       } else {
-        alert(`✅ ¡Importación Exitosa desde "${origen}"!\n\n• Comprobantes cargados: ${imported.length}\n• Compras / Despachos: ${comprasCount}\n• Ventas / Exportaciones: ${ventasCount}`);
+        alert(`✅ ¡Importación Exitosa desde "${origen}"!\n\n• Comprobantes cargados: ${imported.length}\n• Compras / Despachos: ${comprasCount}\n• Ventas / Exportaciones: ${ventasCount}${avisoDup}`);
       }
     }
 
@@ -379,11 +457,10 @@ document.addEventListener('DOMContentLoaded', () => {
           const imported = CsvParser.parseArcaCSV(text, tipoForzado);
 
           if (imported && imported.length > 0) {
-            sistemaVouchers = [...sistemaVouchers, ...imported];
-            arcaVouchers = [...arcaVouchers, ...imported];
+            const { agregados, duplicados } = importarComprobantes(imported);
             saveState();
             recalculateAll();
-            avisarResultadoImport(imported, `"${file.name}" (${label || 'archivo'})`);
+            avisarResultadoImport(agregados, `"${file.name}" (${label || 'archivo'})`, duplicados);
           } else {
             alert(`⚠️ No se pudieron reconocer registros en "${file.name}".\nVerifica que el archivo contenga comprobantes válidos o las columnas de Mis Comprobantes ARCA.`);
           }
@@ -487,6 +564,12 @@ document.addEventListener('DOMContentLoaded', () => {
         retenciones: parseFloat(document.getElementById('comp-retenciones').value) || 0,
         esAduanera: document.getElementById('comp-es-aduanera').value
       };
+
+      const claveNueva = claveComprobante(newV);
+      if (sistemaVouchers.some(v => claveComprobante(v) === claveNueva)) {
+        alert(`⚠️ El comprobante ${newV.tipoDoc} ${newV.numero} (CUIT ${newV.cuit}) ya está cargado con alícuota ${newV.alicuota}%.\nNo se agregó para evitar duplicarlo.`);
+        return;
+      }
 
       sistemaVouchers.push(newV);
       modalComp.classList.add('hidden');
@@ -807,11 +890,16 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', () => {
         const num = btn.dataset.num;
         const vToIncorporate = arcaVouchers.find(a => a.numero === num);
+        if (vToIncorporate && sistemaVouchers.some(v => claveComprobante(v) === claveComprobante(vToIncorporate))) {
+          alert('Ese comprobante ya está en los libros locales. No se volvió a agregar.');
+          return;
+        }
         if (vToIncorporate) {
           sistemaVouchers.push({
             ...vToIncorporate,
             id: 'v_inc_' + Date.now()
           });
+          saveState();
           recalculateAll();
           alert('Comprobante incorporado correctamente desde los registros de ARCA a los libros locales.');
         }
