@@ -127,6 +127,28 @@ document.addEventListener('DOMContentLoaded', () => {
     return normNumero(v.numero) + '|' + String(v.cuit || '').replace(/\D/g, '');
   }
 
+  // Número sin punto de venta (por si se cargó "125" en vez de "00003-00000125")
+  function soloNumero(numero) {
+    const n = normNumero(numero);
+    return n.includes('-') ? n.split('-').pop() : n;
+  }
+
+  // ¿Puede ser la misma factura? Compara por CUIT + número, o por
+  // CUIT/razón social + importe neto + fecha (por si el número se tipeó distinto)
+  function esPosibleDuplicado(a, b) {
+    const cuitA = String(a.cuit || '').replace(/\D/g, '');
+    const cuitB = String(b.cuit || '').replace(/\D/g, '');
+    const mismoCuit = cuitA && cuitA === cuitB;
+    const mismaRazon = normTexto(a.razon) && normTexto(a.razon) === normTexto(b.razon);
+    const mismoNumero = soloNumero(a.numero) && soloNumero(a.numero) === soloNumero(b.numero);
+    const mismoNeto = Math.abs(Math.abs(Number(a.neto) || 0) - Math.abs(Number(b.neto) || 0)) < 0.01;
+    const mismaFecha = String(a.fecha || '') === String(b.fecha || '');
+    if (mismoCuit && mismoNumero) return true;
+    if ((mismoCuit || mismaRazon) && mismoNeto && (mismaFecha || mismoNumero)) return true;
+    if (mismaRazon && mismoNumero) return true;
+    return false;
+  }
+
   function claveComprobante(v) {
     const grupo = (v.tipoOp === 'venta' || v.tipoOp === 'exportacion') ? 'V' : 'C';
     const ali = Math.round((Number(v.alicuota) || 0) * 100);
@@ -583,10 +605,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Posible duplicado: mismo número y CUIT pero distinto tipo o alícuota
       // (ej.: importada como Factura C y cargada a mano como Factura A/B)
-      const parecidos = sistemaVouchers.filter(v => claveNumeroCuit(v) === claveNumeroCuit(newV));
+      const parecidos = sistemaVouchers.filter(v => esPosibleDuplicado(v, newV));
       if (parecidos.length > 0) {
         const detalle = parecidos.map(v => `• ${v.fecha} | ${v.tipoDoc} ${v.numero} | ${v.razon} | Neto $${Number(v.neto || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} | ${v.alicuota}%`).join('\n');
-        const seguir = confirm(`⚠️ Ya hay ${parecidos.length === 1 ? 'un comprobante' : parecidos.length + ' comprobantes'} con el número ${newV.numero} para el CUIT ${newV.cuit}:\n\n${detalle}\n\nSi es la misma factura, tocá CANCELAR para no duplicarla.\nTocá ACEPTAR solo si es otra alícuota de la misma factura o un comprobante distinto.`);
+        const seguir = confirm(`⚠️ POSIBLE FACTURA DUPLICADA\n\nYa ${parecidos.length === 1 ? 'hay un comprobante parecido' : 'hay ' + parecidos.length + ' comprobantes parecidos'} a ${newV.tipoDoc} ${newV.numero} (${newV.razon || 'CUIT ' + newV.cuit}):\n\n${detalle}\n\nSi es la misma factura, tocá CANCELAR para no duplicarla.\nTocá ACEPTAR solo si es otra alícuota de la misma factura o un comprobante distinto.`);
         if (!seguir) return;
       }
 
