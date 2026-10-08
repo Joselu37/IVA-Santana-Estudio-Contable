@@ -114,7 +114,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const n = String(nro).replace(/\D/g, '');
       if (n) return `${p}-${parseInt(n, 10)}`;
     }
+    const soloDig = s.replace(/\D/g, '');
+    // "000200004521" (sin guion): los últimos 8 dígitos son el número
+    if (/^\d+$/.test(s.replace(/[\s.]/g, '')) && soloDig.length > 8) {
+      return `${parseInt(soloDig.slice(0, -8), 10) || 0}-${parseInt(soloDig.slice(-8), 10)}`;
+    }
     return s.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^0+(?=\d)/, '');
+  }
+
+  // Mismo número de comprobante y mismo CUIT (sin importar tipo ni alícuota)
+  function claveNumeroCuit(v) {
+    return normNumero(v.numero) + '|' + String(v.cuit || '').replace(/\D/g, '');
   }
 
   function claveComprobante(v) {
@@ -569,6 +579,15 @@ document.addEventListener('DOMContentLoaded', () => {
       if (sistemaVouchers.some(v => claveComprobante(v) === claveNueva)) {
         alert(`⚠️ El comprobante ${newV.tipoDoc} ${newV.numero} (CUIT ${newV.cuit}) ya está cargado con alícuota ${newV.alicuota}%.\nNo se agregó para evitar duplicarlo.`);
         return;
+      }
+
+      // Posible duplicado: mismo número y CUIT pero distinto tipo o alícuota
+      // (ej.: importada como Factura C y cargada a mano como Factura A/B)
+      const parecidos = sistemaVouchers.filter(v => claveNumeroCuit(v) === claveNumeroCuit(newV));
+      if (parecidos.length > 0) {
+        const detalle = parecidos.map(v => `• ${v.fecha} | ${v.tipoDoc} ${v.numero} | ${v.razon} | Neto $${Number(v.neto || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} | ${v.alicuota}%`).join('\n');
+        const seguir = confirm(`⚠️ Ya hay ${parecidos.length === 1 ? 'un comprobante' : parecidos.length + ' comprobantes'} con el número ${newV.numero} para el CUIT ${newV.cuit}:\n\n${detalle}\n\nSi es la misma factura, tocá CANCELAR para no duplicarla.\nTocá ACEPTAR solo si es otra alícuota de la misma factura o un comprobante distinto.`);
+        if (!seguir) return;
       }
 
       sistemaVouchers.push(newV);
