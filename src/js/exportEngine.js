@@ -5,10 +5,10 @@
 window.ExportEngine = (function() {
   /* ==================================================================
    * LIBRO IVA DIGITAL (RG 4597) - Diseño de registro oficial ARCA
-   * (Especificaciones rev. 30/07/2025). Archivos de ancho fijo:
-   *   LIBRO_IVA_DIGITAL_VENTAS_CBTE        281 caracteres
+   * (validado contra el importador del LID). Archivos de ancho fijo:
+   *   LIBRO_IVA_DIGITAL_VENTAS_CBTE        266 caracteres
    *   LIBRO_IVA_DIGITAL_VENTAS_ALICUOTAS    62 caracteres
-   *   LIBRO_IVA_DIGITAL_COMPRAS_CBTE       340 caracteres
+   *   LIBRO_IVA_DIGITAL_COMPRAS_CBTE       325 caracteres
    *   LIBRO_IVA_DIGITAL_COMPRAS_ALICUOTAS   84 caracteres
    *   LIBRO_IVA_DIGITAL_IMPORTACIONES       50 caracteres
    * Importes: 15 posiciones (13 enteros + 2 decimales, sin separador).
@@ -16,7 +16,7 @@ window.ExportEngine = (function() {
    * CBTE y ALICUOTAS se generan en el mismo orden.
    * ================================================================== */
 
-  const LONG = { VTA_CBTE: 281, VTA_ALI: 62, CPA_CBTE: 340, CPA_ALI: 84, IMPO: 50 };
+  const LONG = { VTA_CBTE: 266, VTA_ALI: 62, CPA_CBTE: 325, CPA_ALI: 84, IMPO: 50 };
   const CUIT_ADUANA_DEFAULT = '33693450239'; // DGA - Dirección General de Aduanas
 
   // Tabla de comprobantes ARCA
@@ -201,8 +201,7 @@ window.ExportEngine = (function() {
         String(alis.length) +             // 19 Cantidad de alícuotas
         codOp +                           // 20 Código de operación
         imp(0) +                          // 21 Otros tributos
-        '00000000' +                      // 22 Fecha vencimiento de pago
-        imp(0)                            // 23 Reintegro Decreto 1043/2016
+        '00000000'                        // 22 Fecha vencimiento de pago
       );
 
       alis.forEach(a => ali.push(
@@ -270,8 +269,7 @@ window.ExportEngine = (function() {
         imp(0) +                                    // 22 Otros tributos
         '00000000000' +                             // 23 CUIT emisor / corredor
         ' '.repeat(30) +                            // 24 Denominación emisor / corredor
-        imp(0) +                                    // 25 IVA comisión
-        imp(0)                                      // 26 Reintegro Dto 1043/2016 / TurIVA
+        imp(0)                                      // 25 IVA comisión
       );
 
       alis.forEach(a => {
@@ -299,7 +297,8 @@ window.ExportEngine = (function() {
    * Con UTF-8 las letras con tilde ocupan 2 bytes y rompen el ancho fijo.
    */
   function aBytesAnsi(texto) {
-    const s = quitarNoAnsi(String(texto).replace(/\r\n/g, '\n')).replace(/\n/g, '\r\n');
+    // Se limpia cada línea por separado para NO perder los saltos de línea (CRLF)
+    const s = String(texto).split(/\r?\n/).map(quitarNoAnsi).join('\r\n');
     const bytes = new Uint8Array(s.length);
     for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xFF;
     return bytes;
