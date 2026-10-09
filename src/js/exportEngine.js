@@ -443,11 +443,15 @@ window.ExportEngine = (function() {
     csv += `Total Crédito Fiscal Computable;-${taxSummary.cfComputableTotal.toFixed(2)}\n`;
     csv += `Saldo Técnico Anterior;-${taxSummary.stAnterior.toFixed(2)}\n`;
     csv += `Saldo Técnico Resultante;${taxSummary.saldoTecnicoResultante.toFixed(2)}\n`;
-    csv += `Retenciones y Percepciones Totales;-${taxSummary.totalPagosACuenta.toFixed(2)}\n`;
+    csv += `Retenciones IVA sufridas;-${taxSummary.retencionesLocales.toFixed(2)}\n`;
+    csv += `Percepciones IVA sufridas;-${taxSummary.percepcionesLocales.toFixed(2)}\n`;
+    csv += `Percepciones aduaneras;-${taxSummary.percepAduanerasTotal.toFixed(2)}\n`;
+    csv += `Saldo Libre Disponibilidad Anterior;-${taxSummary.sldAnterior.toFixed(2)}\n`;
     csv += `Impuesto a Pagar Resultante;${taxSummary.impuestoAPagar.toFixed(2)}\n`;
     csv += `Saldo Libre Disponibilidad Resultante;${taxSummary.saldoLibreDisponibilidadResultante.toFixed(2)}\n`;
 
-    downloadFile(`Papel_de_Trabajo_IVA_${contribuyente.cuit}.csv`, csv, 'text/csv;charset=utf-8;');
+    // BOM para que Excel abra bien los acentos.
+    downloadFile(`Papel_de_Trabajo_IVA_${String(contribuyente.cuit || '').replace(/\D/g, '')}.csv`, '\uFEFF' + csv, 'text/csv;charset=utf-8;');
   }
 
   /**
@@ -459,11 +463,13 @@ window.ExportEngine = (function() {
 
     if (type === 'maestra') {
       filename = 'Plantilla_Maestra_Comprobantes_IVA.csv';
-      content = `Fecha;TipoComprobante;PuntoVenta;Numero;CUIT_Contraparte;RazonSocial;NetoGravado;AlicuotaIVA;Retenciones_Percepciones\n`;
-      content += `2026-08-01;Factura A;00001;00012345;30500012344;DISTRIBUIDORA EJEMPLO S.A.;500000.00;21.0;0.00\n`;
-      content += `2026-08-02;Factura E;00001;00000100;55001294810;CLIENTE EXTERIOR CORP (USA);1200000.00;0.0;0.00\n`;
-      content += `2026-08-05;Factura A;00002;00088910;30708912341;PROVEEDOR NACIONAL S.R.L.;250000.00;21.0;5250.00\n`;
-      content += `2026-08-10;Despacho Impo;26001;IC04001999X;33999000019;ADUANA DE BUENOS AIRES SIM;3500000.00;21.0;700000.00\n`;
+      // La columna TipoOperacion (venta / compra / exportacion / importacion) permite
+      // mezclar todo en un solo archivo: manda sobre la zona por la que se suba.
+      content = `TipoOperacion;Fecha;TipoComprobante;PuntoVenta;Numero;CUIT_Contraparte;RazonSocial;NetoGravado;AlicuotaIVA;Retenciones_Percepciones\n`;
+      content += `venta;2026-08-01;Factura A;00001;00012345;30500012344;DISTRIBUIDORA EJEMPLO S.A.;500000.00;21.0;0.00\n`;
+      content += `exportacion;2026-08-02;Factura E;00001;00000100;55001294810;CLIENTE EXTERIOR CORP (USA);1200000.00;0.0;0.00\n`;
+      content += `compra;2026-08-05;Factura A;00002;00088910;30708912341;PROVEEDOR NACIONAL S.R.L.;250000.00;21.0;5250.00\n`;
+      content += `importacion;2026-08-10;Despacho Impo;26001;IC04001999X;33999000019;ADUANA DE BUENOS AIRES SIM;3500000.00;21.0;700000.00\n`;
     } else if (type === 'ventas') {
       filename = 'Plantilla_Ventas_y_Exportaciones.csv';
       content = `Fecha;TipoComprobante;PuntoVenta;Numero;CUIT_Cliente;RazonSocial;NetoGravado;AlicuotaIVA;Retenciones\n`;

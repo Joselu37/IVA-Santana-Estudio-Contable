@@ -18,6 +18,33 @@ document.addEventListener('DOMContentLoaded', () => {
   function cuitKey(cuit) {
     return String(cuit || '').replace(/\D/g, '');
   }
+
+  // Todo texto que venga de archivos o de ARCA pasa por acá antes de ir a
+  // innerHTML, para que un nombre raro no rompa la pantalla.
+  function escapeHtml(valor) {
+    return String(valor == null ? '' : valor)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function leerCfgCuit(key) {
+    try {
+      const raw = localStorage.getItem('iva_cfg_' + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function actualizarHeader() {
+    document.getElementById('header-razon-social').innerText = contribuyente.razon || '';
+    document.getElementById('header-cuit').innerText =
+      `CUIT: ${contribuyente.cuit || '-'} | ${contribuyente.condicion || 'Resp. Inscripto'}`;
+  }
+
+  function money(n) {
+    return (Number(n) || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
   
   // Simulator State
   let simParams = {
@@ -55,6 +82,30 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSavedState();
     bindEvents();
     recalculateAll();
+    mostrarEstadoArca();
+  }
+
+  async function mostrarEstadoArca() {
+    const btn = document.getElementById('btn-quick-buscar-cuit');
+    if (!btn || !window.ArcaApi || !ArcaApi.estado) return;
+    const est = await ArcaApi.estado();
+    let texto;
+    if (est.configurado) {
+      texto = `Conectado a ARCA (${est.environment === 'production' ? 'producción' : 'homologación'})`;
+    } else if (est.sinServidor) {
+      texto = 'Sin conexión a ARCA: abrí la app con iniciar.bat. La búsqueda funciona en modo manual.';
+    } else {
+      texto = est.error ? `ARCA con error de configuración: ${est.error}` : 'ARCA sin configurar (ver README-ARCA-SETUP.md). La búsqueda funciona en modo manual.';
+    }
+    btn.title = texto;
+    let badge = document.getElementById('arca-estado');
+    if (!badge) {
+      badge = document.createElement('small');
+      badge.id = 'arca-estado';
+      badge.style.cssText = 'display:block; font-size:0.7rem; margin-top:0.25rem; opacity:0.85;';
+      btn.parentElement?.appendChild(badge);
+    }
+    badge.textContent = (est.configurado ? '🟢 ' : '⚪ ') + texto;
   }
 
   function saveState() {
@@ -62,6 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('iva_contribuyente', JSON.stringify(contribuyente));
       const key = cuitKey(contribuyente.cuit);
       if (key) {
+        // Datos propios de cada CUIT (razón social, condición y saldos del período anterior).
+        localStorage.setItem('iva_cfg_' + key, JSON.stringify(contribuyente));
         localStorage.setItem('iva_sys_' + key, JSON.stringify(sistemaVouchers));
         localStorage.setItem('iva_arca_' + key, JSON.stringify(arcaVouchers));
       }
@@ -75,8 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const savedCfg = localStorage.getItem('iva_contribuyente');
       if (savedCfg) {
         contribuyente = JSON.parse(savedCfg);
-        document.getElementById('header-razon-social').innerText = contribuyente.razon;
-        document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
+        actualizarHeader();
 
         const key = cuitKey(contribuyente.cuit);
         const savedSys = localStorage.getItem('iva_sys_' + key);
@@ -187,14 +239,27 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Importa comprobantes a los libros y a la base ARCA sin duplicar
-  function importarComprobantes(imported) {
+  // Percepciones aduaneras que ya vienen dentro de su despacho (mismo número):
+  // si también llegan desde "Mis Retenciones" no se cargan dos veces.
+  const numAlfa = (n) => String(n || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+  function quitarAduanaRepetida(imported) {
+    const despachos = new Set([...sistemaVouchers, ...imported]
+      .filter((v) => v.tipoOp === 'importacion' && Number(v.retenciones) > 0)
+      .map((v) => numAlfa(v.numero)));
+    const quedan = imported.filter((v) => !(v.tipoOp === 'retencion' && v.clase === 'aduanera' && despachos.has(numAlfa(v.numero))));
+    quedan._headerLineDetectada = imported._headerLineDetectada;
+    return { quedan, aduanaRepetida: imported.length - quedan.length };
+  }
+
+  function importarComprobantes(importedOriginal) {
+    const { quedan: imported, aduanaRepetida } = quitarAduanaRepetida(importedOriginal);
     const rSys = agregarSinDuplicados(sistemaVouchers, imported);
     const rArca = agregarSinDuplicados(arcaVouchers, imported);
     sistemaVouchers = rSys.lista;
     arcaVouchers = rArca.lista;
     const agregados = rSys.agregados;
     agregados._headerLineDetectada = imported._headerLineDetectada;
-    return { agregados, duplicados: rSys.duplicados };
+    return { agregados, duplicados: rSys.duplicados, aduanaRepetida };
   }
 
   // ----------------------------------------------------
@@ -218,20 +283,38 @@ document.addEventListener('DOMContentLoaded', () => {
         
         let razonFinal = info.razon;
         if (info.razon.startsWith('CONTRIBUYENTE CUIT')) {
-          const userDefinedName = prompt(`CUIT: ${info.cuit}\nPor favor ingrese o confirme la Razón Social / Nombre para este CUIT:`, '');
+          const aviso = info.manual && info.motivoManual ? `(Modo manual: ${info.motivoManual})\n\n` : '';
+          const userDefinedName = prompt(`${aviso}CUIT: ${info.cuit}\nIngresá o confirmá la Razón Social / Nombre para este CUIT:`, '');
           if (userDefinedName && userDefinedName.trim().length > 0) {
             razonFinal = userDefinedName.trim().toUpperCase();
           }
         }
 
+        const cambioCuit = cuitKey(contribuyente.cuit) !== cuitKey(info.cuit);
         contribuyente.cuit = info.cuit;
         contribuyente.razon = razonFinal;
-        
-        document.getElementById('header-razon-social').innerText = contribuyente.razon;
-        document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | ${info.condicion}`;
+        contribuyente.condicion = info.condicion;
+        if (cambioCuit) {
+          // Si ya había datos guardados de este CUIT, se recuperan; si no, arranca limpio
+          // (sin arrastrar los saldos del contribuyente anterior).
+          const key = cuitKey(info.cuit);
+          const previo = leerCfgCuit(key);
+          contribuyente.stAnterior = previo ? Number(previo.stAnterior) || 0 : 0;
+          contribuyente.sldAnterior = previo ? Number(previo.sldAnterior) || 0 : 0;
+          try {
+            const savedSys = localStorage.getItem('iva_sys_' + key);
+            const savedArca = localStorage.getItem('iva_arca_' + key);
+            sistemaVouchers = savedSys ? JSON.parse(savedSys) : [];
+            arcaVouchers = savedArca ? JSON.parse(savedArca) : [];
+          } catch (e) { sistemaVouchers = []; arcaVouchers = []; }
+        }
+        actualizarHeader();
 
         // Consultar si desea traer registros de ARCA o blanquear para su propia empresa
-        const syncArca = confirm(`Contribuyente Configurado:\n• Razón Social: ${contribuyente.razon}\n• CUIT: ${contribuyente.cuit}\n\n¿Deseas blanquear la pantalla para comenzar la carga/importación de este CUIT desde cero?`);
+        const extra = [info.condicionARCA ? `• Condición ARCA: ${info.condicionARCA}` : '', info.domicilio ? `• Domicilio fiscal: ${info.domicilio}` : '']
+          .filter(Boolean).join('\n');
+        const syncArca = (sistemaVouchers.length || arcaVouchers.length) ? confirm(`Contribuyente configurado:\n• Razón Social: ${contribuyente.razon}\n• CUIT: ${contribuyente.cuit}\n${extra}\n\nEste CUIT ya tiene ${sistemaVouchers.length} comprobantes guardados. ¿Querés blanquearlos para empezar desde cero?`)
+          : (alert(`Contribuyente configurado:\n• Razón Social: ${contribuyente.razon}\n• CUIT: ${contribuyente.cuit}\n${extra}`), false);
 
         if (syncArca) {
           sistemaVouchers = [];
@@ -303,16 +386,29 @@ document.addEventListener('DOMContentLoaded', () => {
       if (result && (result.stAnterior > 0 || result.sldAnterior > 0 || result.cuit)) {
         if (result.stAnterior > 0) contribuyente.stAnterior = result.stAnterior;
         if (result.sldAnterior > 0) contribuyente.sldAnterior = result.sldAnterior;
-        if (result.cuit) contribuyente.cuit = result.cuit;
+        if (result.cuit && cuitKey(result.cuit) !== cuitKey(contribuyente.cuit)) {
+          // La DDJJ es de otro CUIT: se cambia de contribuyente sin pisar los datos del anterior.
+          saveState();
+          const key = cuitKey(result.cuit);
+          const previo = leerCfgCuit(key);
+          contribuyente = previo ? { ...previo } : { razon: result.razon || '', cuit: result.cuit, stAnterior: 0, sldAnterior: 0 };
+          try {
+            const savedSys = localStorage.getItem('iva_sys_' + key);
+            const savedArca = localStorage.getItem('iva_arca_' + key);
+            sistemaVouchers = savedSys ? JSON.parse(savedSys) : [];
+            arcaVouchers = savedArca ? JSON.parse(savedArca) : [];
+          } catch (e) { sistemaVouchers = []; arcaVouchers = []; }
+          if (result.stAnterior > 0) contribuyente.stAnterior = result.stAnterior;
+          if (result.sldAnterior > 0) contribuyente.sldAnterior = result.sldAnterior;
+        }
         if (result.razon) contribuyente.razon = result.razon;
 
-        document.getElementById('header-razon-social').innerText = contribuyente.razon;
-        document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
+        actualizarHeader();
 
         saveState();
         recalculateAll();
 
-        alert(`✅ ¡DDJJ del Período Anterior Procesada Exitosamente!\n\n• Saldo Técnico (1er Párrafo Art. 24): $${contribuyente.stAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}\n• Saldo Libre Disponibilidad (2do Párrafo Art. 24): $${contribuyente.sldAnterior.toLocaleString('es-AR', {minimumFractionDigits:2})}`);
+        alert(`✅ ¡DDJJ del Período Anterior Procesada Exitosamente!\n\n• Saldo Técnico (1er Párrafo Art. 24): $${money(contribuyente.stAnterior)}\n• Saldo Libre Disponibilidad (2do Párrafo Art. 24): $${money(contribuyente.sldAnterior)}`);
       } else {
         const stVal = prompt('No se pudieron detectar los saldos automaticamente.\nIngrese el Saldo Tecnico a Favor del periodo anterior ($) (1er Parrafo Art. 24):', contribuyente.stAnterior);
         const sldVal = prompt('Ingrese el Saldo de Libre Disponibilidad del periodo anterior ($) (2do Parrafo Art. 24):', contribuyente.sldAnterior);
@@ -425,11 +521,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const imported = CsvParser.parseArcaCSV(text, tipoActivoPegado);
       if (imported && imported.length > 0) {
-        const { agregados, duplicados } = importarComprobantes(imported);
+        const { agregados, duplicados, aduanaRepetida } = importarComprobantes(imported);
         saveState();
         recalculateAll();
         modalPegar.classList.add('hidden');
-        avisarResultadoImport(agregados, 'el texto pegado', duplicados);
+        avisarResultadoImport(agregados, 'el texto pegado', duplicados, aduanaRepetida);
       } else {
         alert('No se pudieron reconocer datos de comprobantes. Revisa el formato de separación por coma o punto y coma.');
       }
@@ -448,22 +544,26 @@ document.addEventListener('DOMContentLoaded', () => {
       inputFileRetenciones.value = '';
     });
 
-    function avisarResultadoImport(imported, origen, duplicados = 0) {
-      if (imported.length === 0 && duplicados > 0) {
-        alert(`ℹ️ No se agregó nada desde ${origen}: los ${duplicados} comprobantes ya estaban cargados.`);
+    function avisarResultadoImport(imported, origen, duplicados = 0, aduanaRepetida = 0) {
+      const omitidos = [];
+      if (duplicados > 0) omitidos.push(`• ${duplicados} ya estaban cargados (no se duplicaron)`);
+      if (aduanaRepetida > 0) omitidos.push(`• ${aduanaRepetida} percepciones aduaneras ya incluidas en su despacho (no se duplicaron)`);
+      const notaOmitidos = omitidos.length ? `\n\nOmitidos:\n${omitidos.join('\n')}` : '';
+      if (imported.length === 0) {
+        alert(`ℹ️ No se agregó nada nuevo desde ${origen}.${notaOmitidos}`);
         return;
       }
-      const avisoDup = duplicados > 0 ? `\n• Duplicados omitidos (ya estaban cargados): ${duplicados}` : '';
       const ventasCount = imported.filter(x => x.tipoOp === 'venta' || x.tipoOp === 'exportacion').length;
       const comprasCount = imported.filter(x => x.tipoOp === 'compra' || x.tipoOp === 'importacion').length;
-      const todosEnCero = imported.every(v => !v.neto || v.neto === 0);
+      const retCount = imported.filter(x => x.tipoOp === 'retencion').length;
+      const todosEnCero = imported.every(v => (!v.neto || v.neto === 0) && !(v.tipoOp === 'retencion' && v.retenciones));
 
       if (todosEnCero) {
         const headerDetectada = imported._headerLineDetectada || '(no disponible)';
         console.warn('Encabezado detectado en el archivo importado:', headerDetectada);
         alert(`⚠️ Se cargaron ${imported.length} filas desde ${origen}, pero todas quedaron con importe $0,00.\n\nEsto quiere decir que la app no reconoció la columna de "Importe Neto Gravado" en este archivo.\n\nEncabezado detectado:\n${headerDetectada}\n\nRevisá esa línea y avisale a tu desarrollador con este texto exacto para ajustar la detección de columnas.`);
       } else {
-        alert(`✅ ¡Importación Exitosa desde "${origen}"!\n\n• Comprobantes cargados: ${imported.length}\n• Compras / Despachos: ${comprasCount}\n• Ventas / Exportaciones: ${ventasCount}${avisoDup}`);
+        alert(`✅ ¡Importación Exitosa desde "${origen}"!\n\n• Comprobantes cargados: ${imported.length}\n• Compras / Despachos: ${comprasCount}\n• Ventas / Exportaciones: ${ventasCount}${retCount ? `\n• Retenciones / Percepciones: ${retCount}` : ''}${notaOmitidos}`);
       }
     }
 
@@ -490,10 +590,10 @@ document.addEventListener('DOMContentLoaded', () => {
           const imported = CsvParser.parseArcaCSV(text, tipoForzado);
 
           if (imported && imported.length > 0) {
-            const { agregados, duplicados } = importarComprobantes(imported);
+            const { agregados, duplicados, aduanaRepetida } = importarComprobantes(imported);
             saveState();
             recalculateAll();
-            avisarResultadoImport(agregados, `"${file.name}" (${label || 'archivo'})`, duplicados);
+            avisarResultadoImport(agregados, `"${file.name}" (${label || 'archivo'})`, duplicados, aduanaRepetida);
           } else {
             alert(`⚠️ No se pudieron reconocer registros en "${file.name}".\nVerifica que el archivo contenga comprobantes válidos o las columnas de Mis Comprobantes ARCA.`);
           }
@@ -539,9 +639,8 @@ document.addEventListener('DOMContentLoaded', () => {
         contribuyente = { ...MockData.defaultContribuyente };
         sistemaVouchers = [...MockData.defaultSistemaVouchers];
         arcaVouchers = [...MockData.defaultArcaVouchers];
-
-        document.getElementById('header-razon-social').innerText = contribuyente.razon;
-        document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
+        actualizarHeader();
+        actualizarHeader();
         saveState();
         recalculateAll();
       }
@@ -635,8 +734,13 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const info = await ArcaApi.consultarPadron(cuitVal);
         document.getElementById('cfg-cuit').value = info.cuit;
-        document.getElementById('cfg-razon').value = info.razon;
-        alert(`CUIT Consultado exitosamente:\n• Razón Social: ${info.razon}\n• Condición: ${info.condicion}`);
+        if (info.manual) {
+          alert(`Modo manual: ${info.motivoManual || 'ARCA no disponible'}\nCompletá la razón social a mano.`);
+        } else {
+          document.getElementById('cfg-razon').value = info.razon;
+          contribuyente.condicion = info.condicion;
+          alert(`CUIT consultado en ARCA:\n• Razón Social: ${info.razon}\n• Condición: ${info.condicionARCA || info.condicion}`);
+        }
       } catch(e) {
         alert(e.message);
       }
@@ -656,8 +760,7 @@ document.addEventListener('DOMContentLoaded', () => {
       contribuyente.stAnterior = parseFloat(document.getElementById('cfg-st-anterior').value) || 0;
       contribuyente.sldAnterior = parseFloat(document.getElementById('cfg-sld-anterior').value) || 0;
 
-      document.getElementById('header-razon-social').innerText = contribuyente.razon;
-      document.getElementById('header-cuit').innerText = `CUIT: ${contribuyente.cuit} | Resp. Inscripto`;
+      actualizarHeader();
 
       // Si cambió el CUIT o se seleccionó blanquear
       if (cuitKey(oldCuit) !== cuitKey(newCuit) || resetVouchers) {
@@ -863,7 +966,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const filterTipo = document.getElementById('filter-tipo')?.value || 'todos';
 
     const filtered = sistemaVouchers.filter(v => {
-      const matchSearch = v.cuit.includes(searchTerm) || v.razon.toLowerCase().includes(searchTerm) || v.numero.includes(searchTerm);
+      const matchSearch = !searchTerm || String(v.cuit || '').includes(searchTerm) ||
+        String(v.razon || '').toLowerCase().includes(searchTerm) || String(v.numero || '').toLowerCase().includes(searchTerm);
       const matchTipo = filterTipo === 'todos' || v.tipoOp === filterTipo;
       return matchSearch && matchTipo;
     });
@@ -876,37 +980,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     filtered.forEach(v => {
-      let df = 0;
-      let cf = 0;
-
-      if (v.tipoOp === 'venta') {
-        df = parseFloat(v.df || v.iva) || ((v.neto * v.alicuota) / 100);
-      } else if (v.tipoOp === 'compra' || v.tipoOp === 'importacion') {
-        cf = parseFloat(v.cf || v.iva) || ((v.neto * v.alicuota) / 100);
-      }
+      const iva = TaxEngine.ivaDe(v);
+      const df = v.tipoOp === 'venta' ? iva : 0;
+      const cf = (v.tipoOp === 'compra' || v.tipoOp === 'importacion') ? iva : 0;
+      const neto = Number(v.neto) || 0;
+      const ret = Number(v.retenciones) || 0;
 
       let badgeClass = 'venta';
       let labelOp = 'Venta Loc.';
       if (v.tipoOp === 'exportacion') { badgeClass = 'exportacion'; labelOp = 'Exportación (E)'; }
       else if (v.tipoOp === 'compra') { badgeClass = 'compra'; labelOp = 'Compra Loc.'; }
       else if (v.tipoOp === 'importacion') { badgeClass = 'importacion'; labelOp = 'Despacho Impo'; }
+      else if (v.tipoOp === 'retencion') {
+        badgeClass = 'compra';
+        labelOp = v.clase === 'percepcion' ? 'Percepción IVA' : v.clase === 'aduanera' ? 'Percep. Aduanera' : 'Retención IVA';
+      }
+      const fmtSigno = (n) => (n !== 0 ? (n < 0 ? '-$' : '$') + money(Math.abs(n)) : '-');
 
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td>${v.fecha}</td>
+        <td>${escapeHtml(v.fecha)}</td>
         <td><span class="badge-op ${badgeClass}">${labelOp}</span></td>
-        <td><strong>${v.tipoDoc}</strong><br><small>${v.numero}</small></td>
-        <td>${v.cuit}</td>
-        <td>${v.razon}</td>
-        <td class="text-right">$${v.neto.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
-        <td>${v.alicuota}%</td>
-        <td class="text-right">${df > 0 ? '$' + df.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '-'}</td>
-        <td class="text-right">${cf > 0 ? '$' + cf.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '-'}</td>
-        <td class="text-right">${v.retenciones > 0 ? '$' + v.retenciones.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '-'}</td>
+        <td><strong>${escapeHtml(v.tipoDoc)}</strong><br><small>${escapeHtml(v.numero)}</small></td>
+        <td>${escapeHtml(v.cuit)}</td>
+        <td>${escapeHtml(v.razon)}</td>
+        <td class="text-right">${v.tipoOp === 'retencion' ? '-' : (neto < 0 ? '-$' : '$') + money(Math.abs(neto))}</td>
+        <td>${v.tipoOp === 'retencion' ? '-' : escapeHtml(TaxEngine.alicuotaDe(v)) + '%'}</td>
+        <td class="text-right">${fmtSigno(df)}</td>
+        <td class="text-right">${fmtSigno(cf)}</td>
+        <td class="text-right">${fmtSigno(ret)}</td>
         <td>${v.esAduanera === 'si' ? 'Aduana RG 5339' : 'Mercado Interno'}</td>
         <td><span class="badge-status st-favor">🟢 Registrado</span></td>
         <td>
-          <button class="btn btn-outline btn-sm btn-delete-comp" data-id="${v.id}" title="Eliminar"><i class="ri-delete-bin-line"></i></button>
+          <button class="btn btn-outline btn-sm btn-delete-comp" data-id="${escapeHtml(v.id)}" title="Eliminar"><i class="ri-delete-bin-line"></i></button>
         </td>
       `;
       tbody.appendChild(tr);
@@ -942,17 +1048,17 @@ document.addEventListener('DOMContentLoaded', () => {
     reconData.results.forEach(res => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><strong>${res.comprobante}</strong></td>
-        <td>${res.cuitContraparte}</td>
-        <td>$${res.montoSistema.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
-        <td>$${res.montoArca.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
+        <td><strong>${escapeHtml(res.comprobante)}</strong></td>
+        <td>${escapeHtml(res.cuitContraparte)}</td>
+        <td>$${money(res.montoSistema)}</td>
+        <td>$${money(res.montoArca)}</td>
         <td class="text-right" style="color: ${res.diferenciaIva > 0 ? '#ef4444' : '#10b981'}; font-weight:700;">
-          $${res.diferenciaIva.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+          $${money(res.diferenciaIva)}
         </td>
         <td><span class="${res.badgeClass}">${res.badgeText}</span></td>
-        <td style="max-width: 300px; font-size: 0.8rem;">${res.diagnostico}</td>
+        <td style="max-width: 300px; font-size: 0.8rem;">${escapeHtml(res.diagnostico)}</td>
         <td>
-          ${res.status === 'SOLO_EN_ARCA' ? `<button class="btn btn-primary btn-sm btn-incorporar-arca" data-num="${res.vArca.numero}">+ Incorporar a Libros</button>` : '<span style="color:#94a3b8;">-</span>'}
+          ${res.status === 'SOLO_EN_ARCA' ? `<button class="btn btn-primary btn-sm btn-incorporar-arca" data-key="${escapeHtml(res.key)}">+ Incorporar a Libros</button>` : '<span style="color:#94a3b8;">-</span>'}
         </td>
       `;
       tbody.appendChild(tr);
@@ -960,17 +1066,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.querySelectorAll('.btn-incorporar-arca').forEach(btn => {
       btn.addEventListener('click', () => {
-        const num = btn.dataset.num;
-        const vToIncorporate = arcaVouchers.find(a => a.numero === num);
-        if (vToIncorporate && sistemaVouchers.some(v => claveComprobante(v) === claveComprobante(vToIncorporate))) {
+        const filas = ArcaReconciler.filasArcaPorClave(arcaVouchers, btn.dataset.key);
+        const nuevas = filas.filter(f => !sistemaVouchers.some(v => claveComprobante(v) === claveComprobante(f)));
+        if (filas.length && !nuevas.length) {
           alert('Ese comprobante ya está en los libros locales. No se volvió a agregar.');
           return;
         }
-        if (vToIncorporate) {
-          sistemaVouchers.push({
-            ...vToIncorporate,
-            id: 'v_inc_' + Date.now()
-          });
+        if (nuevas.length) {
+          nuevas.forEach((f, i) => sistemaVouchers.push({ ...f, id: `v_inc_${Date.now()}_${i}` }));
           saveState();
           recalculateAll();
           alert('Comprobante incorporado correctamente desde los registros de ARCA a los libros locales.');
@@ -999,8 +1102,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Actualizar montos dinámicos en etiquetas de los switches
-    document.getElementById('sim-impo-monto').innerText = origSummary.impoIVATotal.toLocaleString('es-AR', {minimumFractionDigits: 2});
-    document.getElementById('sim-percep-aduaneras-monto').innerText = origSummary.percepAduanerasTotal.toLocaleString('es-AR', {minimumFractionDigits: 2});
+    document.getElementById('sim-impo-monto').innerText = money(origSummary.impoIVATotal);
+    document.getElementById('sim-percep-aduaneras-monto').innerText = money(origSummary.percepAduanerasTotal);
 
     // Rellenar original
     document.getElementById('sim-orig-df').innerText = formatMoney(origSummary.dfTotal);
@@ -1019,7 +1122,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const recAlert = document.getElementById('sim-recommendation');
     if (modSummary.impuestoAPagar < origSummary.impuestoAPagar) {
       const ahorro = origSummary.impuestoAPagar - modSummary.impuestoAPagar;
-      recAlert.innerHTML = `<i class="ri-checkbox-circle-line"></i> <strong>Optimización Detectada:</strong> La simulación actual reduce el impuesto a pagar en $${ahorro.toLocaleString('es-AR', {minimumFractionDigits: 2})}.`;
+      recAlert.innerHTML = `<i class="ri-checkbox-circle-line"></i> <strong>Optimización Detectada:</strong> La simulación actual reduce el impuesto a pagar en $${money(ahorro)}.`;
     } else {
       recAlert.innerHTML = `<i class="ri-information-line"></i> Moviendo los controles puedes simular diferir cómputos o solicitar recuperos de exportación Art. 43.`;
     }
@@ -1040,21 +1143,25 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('wp-periodo').innerText = getPeriodoFiscal(sistemaVouchers);
     document.getElementById('wp-fecha-hoy').innerText = getFechaHoy();
 
-    // 1. Débito Fiscal
+    // 1. Débito Fiscal (una fila por alícuota con movimiento)
+    const ORDEN_ALIC = [21, 10.5, 27, 5, 2.5, 0];
+    const etiquetaAlic = (a) => (Number(a) === 0 ? 'Exentas / No gravadas' : `Gravadas al ${String(a).replace('.', ',')}%`);
+    const filasAlic = (netos, ivas, prefijo) => {
+      const filas = ORDEN_ALIC.filter((a) => netos[a] || ivas[a]);
+      if (!filas.length) filas.push(21);
+      return filas.map((a) => `<tr><td>${prefijo} ${etiquetaAlic(a)}</td><td class="text-right">$${money(netos[a])}</td><td class="text-right">$${money(ivas[a])}</td></tr>`).join('');
+    };
+
     const tbodyDf = document.getElementById('wp-tbody-df');
-    tbodyDf.innerHTML = `
-      <tr><td>Ventas Gravadas al 21%</td><td class="text-right">$${summary.dfNetoPorAlicuota[21].toLocaleString('es-AR', {minimumFractionDigits: 2})}</td><td class="text-right">$${summary.dfPorAlicuota[21].toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
-      <tr><td>Ventas Gravadas al 10.5%</td><td class="text-right">$${summary.dfNetoPorAlicuota[10.5].toLocaleString('es-AR', {minimumFractionDigits: 2})}</td><td class="text-right">$${summary.dfPorAlicuota[10.5].toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
-      <tr><td>Ventas Gravadas al 27%</td><td class="text-right">$${summary.dfNetoPorAlicuota[27].toLocaleString('es-AR', {minimumFractionDigits: 2})}</td><td class="text-right">$${summary.dfPorAlicuota[27].toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
-      <tr style="font-weight:700; background:#f8fafc;"><td>TOTAL DÉBITO FISCAL</td><td class="text-right">$${summary.dfNetoTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td><td class="text-right">$${summary.dfTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
+    tbodyDf.innerHTML = filasAlic(summary.dfNetoPorAlicuota, summary.dfPorAlicuota, 'Ventas') + `
+      <tr style="font-weight:700; background:#f8fafc;"><td>TOTAL DÉBITO FISCAL</td><td class="text-right">$${money(summary.dfNetoTotal)}</td><td class="text-right">$${money(summary.dfTotal)}</td></tr>
     `;
 
     // 2. Crédito Fiscal
     const tbodyCf = document.getElementById('wp-tbody-cf');
-    tbodyCf.innerHTML = `
-      <tr><td>Compras Locales Gravadas (21%, 10.5%, 27%)</td><td class="text-right">$${summary.cfNetoTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td><td class="text-right">$${summary.cfTotalBruto.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
-      <tr><td>Despachos de Importación SIM (Aduana)</td><td class="text-right">$${summary.impoNetoTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td><td class="text-right">$${summary.impoIVATotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
-      <tr><td>Prorrateo Computable (${simParams.prorrateoPct}%)</td><td class="text-right">-</td><td class="text-right">$${summary.cfComputableTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td></tr>
+    tbodyCf.innerHTML = filasAlic(summary.cfNetoPorAlicuota, summary.cfPorAlicuota, 'Compras locales') + `
+      <tr><td>Despachos de Importación SIM (Aduana)</td><td class="text-right">$${money(summary.impoNetoTotal)}</td><td class="text-right">$${money(summary.impoIVATotal)}</td></tr>
+      <tr style="font-weight:700; background:#f8fafc;"><td>CRÉDITO FISCAL COMPUTABLE (prorrateo ${simParams.prorrateoPct}%)</td><td class="text-right">-</td><td class="text-right">$${money(summary.cfComputableTotal)}</td></tr>
     `;
 
     // 3. Exportación
