@@ -265,7 +265,14 @@ window.ExportEngine = (function() {
    * COMPRAS (incluye despachos de importación tipo 066):
    * devuelve { cbte, alicuotas, importaciones }.
    */
-  function generarLIDCompras(comprobantes) {
+  // Comprobantes de compras que exigen informar el CUIT del emisor/corredor (campo 23):
+  // 033 Liquidación primaria de granos, 058/059/060 cuentas de venta y líquido producto,
+  // 063 Liquidación (bancos, etc.). Si no hay un tercero, va el CUIT del propio informante.
+  const TIPOS_CON_CORREDOR = new Set([33, 58, 59, 60, 63]);
+
+  function generarLIDCompras(comprobantes, opciones = {}) {
+    const cuitInformante = String(opciones.cuitInformante || '').replace(/\D/g, '');
+    const nombreInformante = opciones.nombreInformante || '';
     const grupos = agruparComprobantes(
       comprobantes.filter(c => (c.tipoOp === 'compra' || c.tipoOp === 'importacion') && !esSoloPagoACuenta(c))
         .filter(c => (Number(c.neto) || 0) !== 0 || (Number(c.iva) || 0) !== 0)
@@ -289,6 +296,12 @@ window.ExportEngine = (function() {
       }
 
       const ivaComputable = esClaseBoC(g.tipo) ? 0 : g.ivaTotal;
+      const corredor = TIPOS_CON_CORREDOR.has(g.tipo) && cuitInformante
+        ? { cuit: num(cuitInformante, 11), nombre: alfa(nombreInformante, 30) }
+        : { cuit: '00000000000', nombre: ' '.repeat(30) };
+      if (TIPOS_CON_CORREDOR.has(g.tipo) && !cuitInformante && 'cuitInformante' in opciones) {
+        console.warn(`[LID] Comprobante tipo ${g.tipo} sin CUIT del informante: ARCA lo va a rechazar.`);
+      }
       const total = g.netoTotal + g.ivaTotal + g.noGravado + g.percepcionIVA;
 
       cbte.push(
@@ -314,8 +327,8 @@ window.ExportEngine = (function() {
         codOp +                                     // 20 Código de operación
         imp(ivaComputable) +                        // 21 Crédito fiscal computable
         imp(0) +                                    // 22 Otros tributos
-        '00000000000' +                             // 23 CUIT emisor / corredor
-        ' '.repeat(30) +                            // 24 Denominación emisor / corredor
+        corredor.cuit +                             // 23 CUIT emisor / corredor
+        corredor.nombre +                           // 24 Denominación emisor / corredor
         imp(0)                                      // 25 IVA comisión
       );
 
@@ -385,7 +398,8 @@ window.ExportEngine = (function() {
    * Descarga los archivos del Libro IVA Digital para el período.
    * tipo: 'ventas' | 'compras' | 'importaciones'
    */
-  function exportarLID(tipo, comprobantes, cuit, periodo) {
+  function exportarLID(tipo, comprobantes, cuit, periodo, nombre) {
+    const opcionesCompras = { cuitInformante: cuit, nombreInformante: nombre };
     const sufijo = `${String(cuit || '').replace(/\D/g, '')}${periodo ? '_' + periodo : ''}`;
     const archivos = [];
     if (tipo === 'ventas') {
@@ -394,13 +408,13 @@ window.ExportEngine = (function() {
       archivos.push([`LIBRO_IVA_DIGITAL_VENTAS_CBTE_${sufijo}.txt`, r.cbte]);
       archivos.push([`LIBRO_IVA_DIGITAL_VENTAS_ALICUOTAS_${sufijo}.txt`, r.alicuotas]);
     } else if (tipo === 'compras') {
-      const r = generarLIDCompras(comprobantes);
+      const r = generarLIDCompras(comprobantes, opcionesCompras);
       if (!r.cantidad) return 0;
       archivos.push([`LIBRO_IVA_DIGITAL_COMPRAS_CBTE_${sufijo}.txt`, r.cbte]);
       archivos.push([`LIBRO_IVA_DIGITAL_COMPRAS_ALICUOTAS_${sufijo}.txt`, r.alicuotas]);
       if (r.importaciones) archivos.push([`LIBRO_IVA_DIGITAL_IMPORTACIONES_${sufijo}.txt`, r.importaciones]);
     } else if (tipo === 'importaciones') {
-      const r = generarLIDCompras(comprobantes);
+      const r = generarLIDCompras(comprobantes, opcionesCompras);
       if (!r.importaciones) return 0;
       archivos.push([`LIBRO_IVA_DIGITAL_IMPORTACIONES_${sufijo}.txt`, r.importaciones]);
     }

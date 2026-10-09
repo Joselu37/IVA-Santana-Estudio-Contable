@@ -890,7 +890,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const seguir = confirm(`⚠️ CONTROL DE TOTALES — ${etiqueta}\n\nEl IVA del archivo TXT NO coincide con la liquidación de la app:\n\n${c.detalle}\n\nCausas habituales: un comprobante con tipo mal cargado (ej. Factura C cargada como A), una nota de crédito cargada en positivo, o una retención/percepción cargada como compra.\n\nRevisalo antes de presentar. ¿Descargar el TXT igual?`);
         if (!seguir) return;
       }
-      const n = ExportEngine.exportarLID(tipo, sistemaVouchers, contribuyente.cuit, periodoLID());
+      const n = ExportEngine.exportarLID(tipo, sistemaVouchers, contribuyente.cuit, periodoLID(), contribuyente.razon);
       if (!n) { alert(`No hay comprobantes de ${etiqueta.toLowerCase()} para exportar.`); return; }
       if (c.ok) alert(`✅ CONTROL DE TOTALES OK — ${etiqueta}\n\nEl IVA del TXT coincide con la liquidación de la app:\n\n${c.detalle}`);
     }

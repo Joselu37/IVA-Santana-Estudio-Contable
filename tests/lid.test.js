@@ -41,3 +41,15 @@ test('el IVA del TXT coincide con la liquidación (control de totales)', () => {
   assert.ok(Math.abs(tc.positivo - s.cfPositivo) < 1);
   assert.ok(Math.abs(tc.impo - s.impoIVATotal) < 1);
 });
+
+test('Liquidación tipo 063 (bancos): informa el CUIT del informante como emisor/corredor', () => {
+  const c = ExportEngine.generarLIDCompras([{ tipoOp: 'compra', tipoDoc: '63 - Liquidación A', numero: '01009-00065962', fecha: '2026-09-30', cuit: '30500010912', razon: 'BANCO', neto: 13443.64, iva: 1411.58, alicuota: 10.5 }],
+    { cuitInformante: '20-27348631-4', nombreInformante: 'Pucheta Darío' });
+  const l = c.cbte;
+  assert.strictEqual(l.length, 325);
+  assert.strictEqual(l.slice(8, 11), '063');
+  assert.strictEqual(l.slice(269, 280), '20273486314');
+  assert.strictEqual(l.slice(280, 310).trim(), 'Pucheta Darío');
+  const fa = ExportEngine.generarLIDCompras([{ tipoOp: 'compra', tipoDoc: 'Factura A', numero: '00001-00000001', fecha: '2026-09-30', cuit: '30500010912', razon: 'X', neto: 100, iva: 21, alicuota: 21 }], { cuitInformante: '20273486314' });
+  assert.strictEqual(fa.cbte.slice(269, 280), '00000000000', 'en una factura común el campo va en ceros');
+});
