@@ -1,0 +1,9 @@
+# Datos sensibles: nunca se suben ni se comparten
+arca-config.json
+certs/
+data/
+*.key
+*.pem
+*.p12
+
+node_modules/

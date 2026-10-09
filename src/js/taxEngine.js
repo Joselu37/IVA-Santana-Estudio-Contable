@@ -1,242 +1,245 @@
 /**
- * Tax Engine for Argentine VAT (IVA) Settlement
- * Supports Responsables Inscriptos & Sociedades
- * Handles Mercado Interno, Exportaciones (Art. 43), Importaciones (Despachos SIM / RG 5339),
- * Prorrateo Art. 13, and Saldos Art. 24.
+ * Motor de liquidación de IVA (Responsables Inscriptos y Sociedades).
+ * Mercado interno, Exportaciones (Art. 43), Importaciones (despachos / RG 5339),
+ * Prorrateo Art. 13 y Saldos Art. 24.
+ *
+ * Función pura: recibe comprobantes y parámetros y devuelve números.
+ * No toca la pantalla ni modifica los comprobantes que recibe.
+ *
+ * Tipos de operación (tipoOp):
+ *   venta | exportacion | compra | importacion | retencion
+ * Los registros "retencion" son retenciones/percepciones sufridas cargadas desde
+ * "Mis Retenciones" (clase: 'retencion' | 'percepcion' | 'aduanera').
+ *
+ * Notas de crédito: igual que el Libro IVA Digital, no se restan de su propio
+ * total sino que se suman del otro lado:
+ *  - NC recibidas (compras) → "Restitución de crédito fiscal": suman al Débito Fiscal
+ *  - NC emitidas (ventas)   → "Restitución de débito fiscal": suman al Crédito Fiscal
+ * El saldo final es el mismo, pero así los totales coinciden con los de ARCA.
  */
+(function (root) {
+  const ALICUOTAS = [0, 2.5, 5, 10.5, 21, 27];
 
-window.TaxEngine = (function() {
+  function num(v) {
+    const n = parseFloat(v);
+    return isFinite(n) ? n : 0;
+  }
+
+  function redondear(n) {
+    return Math.round((n + Number.EPSILON) * 100) / 100;
+  }
+
+  /** Alícuota estándar más cercana (0, 2.5, 5, 10.5, 21, 27). */
+  function alicuotaNormalizada(alicuota) {
+    const a = num(alicuota);
+    return ALICUOTAS.reduce((mejor, x) => (Math.abs(x - a) < Math.abs(mejor - a) ? x : mejor), ALICUOTAS[0]);
+  }
+
+  /** Clase del comprobante por su nombre ("Factura C", "11 - Factura C", "Nota de Crédito B"...). */
+  function claseComprobante(comp) {
+    const t = String(comp.tipoDoc || '').replace(/\s*\(.*\)\s*$/, '').trim();
+    const m = t.match(/\b([ABCEM])$/);
+    return m ? m[1] : '';
+  }
+
+  /** Certificados de retención / constancias de percepción cargados como compra: no son facturas. */
+  function esPagoACuentaCargadoComoCompra(comp) {
+    const t = String(comp.tipoDoc || '');
+    return /retenci|percepci|certificado|constancia|sircer/i.test(t) && !/factura|nota de|despacho/i.test(t);
+  }
+
+  /** ¿Este comprobante no genera débito/crédito fiscal? */
+  function sinIVA(comp) {
+    if (!comp) return true;
+    if (comp.tipoOp === 'exportacion' || comp.tipoOp === 'retencion') return true;
+    const clase = claseComprobante(comp);
+    if (comp.tipoOp === 'venta' && clase === 'C') return true; // Factura C no lleva débito
+    if (comp.tipoOp === 'compra' && (clase === 'B' || clase === 'C' || esPagoACuentaCargadoComoCompra(comp))) return true;
+    return false;
+  }
+
+  /** IVA informado en el comprobante (null si no vino el dato). Un 0 informado se respeta. */
+  function ivaInformado(comp) {
+    const campo = comp.tipoOp === 'venta' ? 'df' : 'cf';
+    const v = comp[campo] !== undefined && comp[campo] !== null && comp[campo] !== '' ? comp[campo] : comp.iva;
+    if (v === undefined || v === null || v === '') return null;
+    const n = parseFloat(v);
+    return isNaN(n) ? null : n;
+  }
+
   /**
-   * Calculates full VAT status given a list of comprobantes and taxpayer parameters.
-   * @param {Array} comprobantes - List of invoices/despachos
-   * @param {Object} params - { stAnterior, sldAnterior, prorrateoPct, incluirImpo, incluirPercepAduaneras, solicitarArt43 }
+   * IVA de un comprobante: el informado o, si no vino (carga manual / plantilla),
+   * neto × alícuota. Respeta el signo (notas de crédito).
+   */
+  function ivaDe(comp) {
+    if (sinIVA(comp)) return 0;
+    const inf = ivaInformado(comp);
+    if (inf !== null) return inf;
+    return (num(comp.neto) * num(comp.alicuota)) / 100;
+  }
+
+  /** Alícuota efectiva: la informada, o la deducida de IVA/neto si no vino. */
+  function alicuotaDe(comp) {
+    if (sinIVA(comp) && comp.tipoOp !== 'exportacion') return 0;
+    const a = num(comp.alicuota);
+    if (a > 0) return alicuotaNormalizada(a);
+    const neto = num(comp.neto);
+    const iva = ivaDe(comp);
+    if (neto !== 0 && iva !== 0) return alicuotaNormalizada((iva / neto) * 100);
+    return 0;
+  }
+
+  function bucketsVacios() {
+    const b = {};
+    ALICUOTAS.forEach((a) => { b[a] = 0; });
+    return b;
+  }
+
+  /**
+   * @param {Array} comprobantes
+   * @param {Object} params { stAnterior, sldAnterior, prorrateoPct, incluirImpo, incluirPercepAduaneras, solicitarArt43 }
    */
   function calculateIVA(comprobantes, params = {}) {
-    const prorrateoPct = (params.prorrateoPct !== undefined ? params.prorrateoPct : 100) / 100;
-    const stAnterior = parseFloat(params.stAnterior) || 0;
-    const sldAnterior = parseFloat(params.sldAnterior) || 0;
+    const prorrateoPct = (params.prorrateoPct !== undefined ? num(params.prorrateoPct) : 100) / 100;
+    const stAnterior = num(params.stAnterior);
+    const sldAnterior = num(params.sldAnterior);
     const incluirImpo = params.incluirImpo !== false;
     const incluirPercepAduaneras = params.incluirPercepAduaneras !== false;
     const solicitarArt43 = params.solicitarArt43 !== false;
 
-    // Totales Débito Fiscal (Ventas)
-    let dfTotal = 0;
     let dfNetoTotal = 0;
-    let dfPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
-    let dfNetoPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
-    
-    // Ventas Exportación (Factura E)
+    let dfPositivo = 0, restitucionDF = 0; // ventas (NC emitidas = restitución de débito)
+    const dfPorAlicuota = bucketsVacios(), dfNetoPorAlicuota = bucketsVacios();
+
     let expoNetoTotal = 0;
 
-    // Totales Crédito Fiscal (Compras)
-    let cfTotalBruto = 0;
-    let cfNetoTotal = 0;
-    let cfPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
-    let cfNetoPorAlicuota = { 21: 0, 10.5: 0, 27: 0, 5: 0, 2.5: 0 };
+    let cfNetoTotal = 0; // solo compras locales
+    let cfPositivo = 0, restitucionCF = 0; // compras (NC recibidas = restitución de crédito)
+    const cfPorAlicuota = bucketsVacios(), cfNetoPorAlicuota = bucketsVacios();
 
-    // Importaciones (Despachos Aduana)
-    let impoNetoTotal = 0;
-    let impoIVATotal = 0;
-    let percepAduanerasTotal = 0; // RG 5339 / RG 2281
+    let impoNetoTotal = 0, impoIVATotal = 0;
+    let percepAduanerasTotal = 0;
+    let retencionesLocales = 0, percepcionesLocales = 0;
 
-    // Retenciones & Percepciones Sufrientes (Locales)
-    let retencionesLocales = 0;
-    let percepcionesLocales = 0;
-
-    // Notas de crédito: ARCA (Libro IVA Digital) NO las resta de su propio total, sino que
-    // las suma del otro lado:
-    //  - NC recibidas (compras)  -> "Restitución de crédito fiscal": suman al Débito Fiscal
-    //  - NC emitidas (ventas)    -> "Restitución de débito fiscal": suman al Crédito Fiscal
-    // El saldo final es el mismo, pero así los totales coinciden con los de ARCA.
-    let dfPositivo = 0, restitucionDF = 0;   // ventas
-    let cfPositivo = 0, restitucionCF = 0;   // compras
-
-    // IVA informado en el comprobante. Solo se calcula neto x alícuota si NO vino el dato
-    // (carga manual / plantilla). Si vino en 0 (Factura B/C) se respeta el 0.
-    function ivaInformado(comp, campo) {
-      const v = comp[campo] !== undefined && comp[campo] !== null && comp[campo] !== '' ? comp[campo] : comp.iva;
-      if (v === undefined || v === null || v === '') return null;
-      const n = parseFloat(v);
-      return isNaN(n) ? null : n;
-    }
-
-    // Clase del comprobante por su nombre ("Factura C", "11 - Factura C", "Nota de Crédito B"...)
-    function claseComprobante(comp) {
-      const t = String(comp.tipoDoc || '').replace(/\s*\(.*\)\s*$/, '').trim();
-      const m = t.match(/\b([ABCEM])$/);
-      return m ? m[1] : '';
-    }
-
-    // Iterar comprobantes
-    comprobantes.forEach(comp => {
-      const neto = parseFloat(comp.neto) || 0;
-      let alicuota = parseFloat(comp.alicuota) || 0;
-      const retPercep = parseFloat(comp.retenciones) || 0;
+    (comprobantes || []).forEach((comp) => {
+      const neto = num(comp.neto);
+      const retPercep = num(comp.retenciones);
       const esAduanera = comp.esAduanera === 'si' || comp.esAduanera === true;
 
-      // 1. VENTAS (Mercado Interno)
-      if (comp.tipoOp === 'venta') {
-        dfNetoTotal += neto;
-        
-        const dfInf = ivaInformado(comp, 'df');
-        let dfComp = dfInf !== null ? dfInf : 0;
-        const ventaClaseC = claseComprobante(comp) === 'C'; // Factura C no lleva débito fiscal
-        if (ventaClaseC) dfComp = 0;
-        if (!ventaClaseC && dfInf === null && neto !== 0 && alicuota > 0) {
-          dfComp = (neto * alicuota) / 100;
-        } else if (dfComp > 0 && neto > 0 && alicuota === 0) {
-          alicuota = Math.round((dfComp / neto) * 100 * 10) / 10;
-          comp.alicuota = alicuota;
+      switch (comp.tipoOp) {
+        case 'venta': {
+          const iva = ivaDe(comp);
+          const a = alicuotaDe(comp);
+          dfNetoTotal += neto;
+          if (iva >= 0) dfPositivo += iva; else restitucionDF += -iva;
+          dfPorAlicuota[a] += iva;
+          dfNetoPorAlicuota[a] += neto;
+          // Retenciones de IVA sufridas al cobrar esta venta.
+          retencionesLocales += retPercep;
+          break;
         }
-
-        dfTotal += dfComp;
-        if (dfComp >= 0) dfPositivo += dfComp; else restitucionDF += -dfComp;
-
-        // Clasificación por alícuota en tabla
-        const aliKey = [21, 10.5, 27, 5, 2.5].find(a => Math.abs(a - alicuota) < 1) || 21;
-        dfPorAlicuota[aliKey] = (dfPorAlicuota[aliKey] || 0) + dfComp;
-        dfNetoPorAlicuota[aliKey] = (dfNetoPorAlicuota[aliKey] || 0) + neto;
-      } 
-      // 2. EXPORTACIONES (Factura E)
-      else if (comp.tipoOp === 'exportacion') {
-        expoNetoTotal += neto;
-        // Alícuota 0% en exportación
-      }
-      // 3. COMPRAS LOCALES
-      else if (comp.tipoOp === 'compra') {
-        cfNetoTotal += neto;
-        
-        const cfInf = ivaInformado(comp, 'cf');
-        let cfComp = cfInf !== null ? cfInf : 0;
-        // Facturas B y C recibidas no dan crédito fiscal (aunque hayan quedado guardadas con IVA)
-        // Certificados de retención / constancias de percepción son pagos a cuenta, no facturas: no dan crédito fiscal
-        const esPagoACuenta = /retenci|percepci|certificado|constancia|sircer/i.test(String(comp.tipoDoc || '')) && !/factura|nota de|despacho/i.test(String(comp.tipoDoc || ''));
-        const sinCredito = ['B', 'C'].includes(claseComprobante(comp)) || esPagoACuenta;
-        if (sinCredito) cfComp = 0;
-        if (!sinCredito && cfInf === null && neto !== 0 && alicuota > 0) {
-          cfComp = (neto * alicuota) / 100;
-        } else if (cfComp > 0 && neto > 0 && alicuota === 0) {
-          alicuota = Math.round((cfComp / neto) * 100 * 10) / 10;
-          comp.alicuota = alicuota;
-        }
-
-        cfTotalBruto += cfComp;
-        if (cfComp >= 0) cfPositivo += cfComp; else restitucionCF += -cfComp;
-
-        const aliKey = [21, 10.5, 27, 5, 2.5].find(a => Math.abs(a - alicuota) < 1) || 21;
-        cfPorAlicuota[aliKey] = (cfPorAlicuota[aliKey] || 0) + cfComp;
-        cfNetoPorAlicuota[aliKey] = (cfNetoPorAlicuota[aliKey] || 0) + neto;
-
-        if (retPercep > 0) {
-          percepcionesLocales += retPercep;
-        }
-      }
-      // 4. DESPACHOS DE IMPORTACIÓN (Aduana)
-      else if (comp.tipoOp === 'importacion') {
-        if (incluirImpo) {
-          impoNetoTotal += neto;
-          const impoInf = ivaInformado(comp, 'cf');
-          let impoIVA = impoInf !== null ? impoInf : 0;
-          if (impoInf === null && neto > 0 && alicuota > 0) {
-            impoIVA = (neto * alicuota) / 100;
-          }
-          impoIVATotal += impoIVA;
+        case 'exportacion':
+          expoNetoTotal += neto;
+          retencionesLocales += retPercep;
+          break;
+        case 'compra': {
+          const iva = ivaDe(comp);
+          const a = alicuotaDe(comp);
           cfNetoTotal += neto;
+          if (iva >= 0) cfPositivo += iva; else restitucionCF += -iva;
+          cfPorAlicuota[a] += iva;
+          cfNetoPorAlicuota[a] += neto;
+          // Percepciones de IVA sufridas en la factura de compra.
+          percepcionesLocales += retPercep;
+          break;
         }
-        if (retPercep > 0) {
+        case 'importacion':
+          if (incluirImpo) {
+            impoNetoTotal += neto;
+            impoIVATotal += ivaDe(comp);
+          }
           if (esAduanera) {
-            if (incluirPercepAduaneras) {
-              percepAduanerasTotal += retPercep;
-            }
+            if (incluirPercepAduaneras) percepAduanerasTotal += retPercep;
           } else {
             percepcionesLocales += retPercep;
           }
+          break;
+        case 'retencion': {
+          const clase = comp.clase || (esAduanera ? 'aduanera' : 'retencion');
+          if (clase === 'aduanera') {
+            if (incluirPercepAduaneras) percepAduanerasTotal += retPercep;
+          } else if (clase === 'percepcion') {
+            percepcionesLocales += retPercep;
+          } else {
+            retencionesLocales += retPercep;
+          }
+          break;
         }
+        default:
+          break;
       }
     });
 
-    // Cómputo Crédito Fiscal con Prorrateo Art. 13
-    // Criterio ARCA: el prorrateo aplica al crédito de compras; las restituciones van completas
-    const cfComputableLocales = cfPositivo * prorrateoPct + restitucionDF;
-    dfTotal = dfPositivo + restitucionCF;
-    const cfComputableTotal = cfComputableLocales + (incluirImpo ? impoIVATotal : 0);
+    // Débito fiscal total: ventas + restitución de crédito (NC recibidas).
+    const dfTotal = dfPositivo + restitucionCF;
+    const cfTotalBruto = cfPositivo - restitucionCF;
 
-    // Recupero de IVA Exportador (Art. 43)
+    // Prorrateo Art. 13: alcanza al crédito de compras locales e importaciones.
+    // Las restituciones de débito (NC emitidas) se computan completas.
+    const cfImpoComputable = incluirImpo ? impoIVATotal : 0;
+    const cfComputableTotal = (cfPositivo + cfImpoComputable) * prorrateoPct + restitucionDF;
+
+    // Art. 43: proporción del crédito vinculada a exportaciones (informativo).
     const ventasTotales = dfNetoTotal + expoNetoTotal;
-    let coefExportacion = 0;
-    if (ventasTotales > 0) {
-      coefExportacion = expoNetoTotal / ventasTotales;
-    }
-    const cfVinculadoExportacion = solicitarArt43 ? (cfComputableTotal * coefExportacion) : 0;
+    const coefExportacion = ventasTotales > 0 ? expoNetoTotal / ventasTotales : 0;
+    const cfVinculadoExportacion = solicitarArt43 ? cfComputableTotal * coefExportacion : 0;
 
-    // Subtotal Débito vs Crédito
+    // Primer párrafo Art. 24: saldo técnico.
     const subtotalDebitoCredito = dfTotal - cfComputableTotal;
+    const saldoTecnicoNeto = subtotalDebitoCredito - stAnterior;
+    const saldoTecnicoResultante = saldoTecnicoNeto < 0 ? -saldoTecnicoNeto : 0;
+    const remanenteADisponer = saldoTecnicoNeto > 0 ? saldoTecnicoNeto : 0;
 
-    // Determinación de Saldo Técnico (1er Párrafo Art. 24)
-    let saldoTecnicoNeto = subtotalDebitoCredito - stAnterior;
-    let saldoTecnicoResultante = 0;
-    let remanenteADisponer = 0;
-
-    if (saldoTecnicoNeto < 0) {
-      saldoTecnicoResultante = Math.abs(saldoTecnicoNeto);
-      remanenteADisponer = 0;
-    } else {
-      saldoTecnicoResultante = 0;
-      remanenteADisponer = saldoTecnicoNeto;
-    }
-
-    // Retenciones y Percepciones totales
+    // Segundo párrafo Art. 24: pagos a cuenta y saldo de libre disponibilidad.
     const totalPagosACuenta = retencionesLocales + percepcionesLocales + percepAduanerasTotal + sldAnterior;
+    const netFinal = remanenteADisponer - totalPagosACuenta;
+    const impuestoAPagar = netFinal > 0 ? netFinal : 0;
+    const saldoLibreDisponibilidadResultante = netFinal < 0 ? -netFinal : 0;
 
-    // Posición Definitiva (2do Párrafo Art. 24)
-    let impuestoAPagar = 0;
-    let saldoLibreDisponibilidadResultante = 0;
-
-    if (remanenteADisponer > 0) {
-      const netFinal = remanenteADisponer - totalPagosACuenta;
-      if (netFinal > 0) {
-        impuestoAPagar = netFinal;
-        saldoLibreDisponibilidadResultante = 0;
-      } else {
-        impuestoAPagar = 0;
-        saldoLibreDisponibilidadResultante = Math.abs(netFinal);
-      }
-    } else {
-      impuestoAPagar = 0;
-      saldoLibreDisponibilidadResultante = totalPagosACuenta;
-    }
+    const r = redondear;
+    const rb = (b) => { const o = {}; Object.keys(b).forEach((k) => { o[k] = r(b[k]); }); return o; };
 
     return {
-      dfTotal,
-      dfNetoTotal,
-      dfPorAlicuota,
-      dfNetoPorAlicuota,
-      expoNetoTotal,
-      cfTotalBruto,
-      cfNetoTotal,
-      cfComputableTotal,
-      cfVinculadoExportacion,
-      dfPositivo,
-      cfPositivo,
-      restitucionDF,
-      restitucionCF,
+      dfTotal: r(dfTotal),
+      dfNetoTotal: r(dfNetoTotal),
+      dfPorAlicuota: rb(dfPorAlicuota),
+      dfNetoPorAlicuota: rb(dfNetoPorAlicuota),
+      expoNetoTotal: r(expoNetoTotal),
+      cfTotalBruto: r(cfTotalBruto),
+      cfNetoTotal: r(cfNetoTotal),
+      cfPorAlicuota: rb(cfPorAlicuota),
+      cfNetoPorAlicuota: rb(cfNetoPorAlicuota),
+      cfComputableTotal: r(cfComputableTotal),
+      cfVinculadoExportacion: r(cfVinculadoExportacion),
+      dfPositivo: r(dfPositivo),
+      cfPositivo: r(cfPositivo),
+      restitucionDF: r(restitucionDF),
+      restitucionCF: r(restitucionCF),
       coefExportacion,
-      impoNetoTotal,
-      impoIVATotal,
-      percepAduanerasTotal,
-      retencionesLocales,
-      percepcionesLocales,
-      subtotalDebitoCredito,
-      stAnterior,
-      saldoTecnicoResultante,
-      sldAnterior,
-      totalPagosACuenta,
-      impuestoAPagar,
-      saldoLibreDisponibilidadResultante
+      impoNetoTotal: r(impoNetoTotal),
+      impoIVATotal: r(impoIVATotal),
+      percepAduanerasTotal: r(percepAduanerasTotal),
+      retencionesLocales: r(retencionesLocales),
+      percepcionesLocales: r(percepcionesLocales),
+      subtotalDebitoCredito: r(subtotalDebitoCredito),
+      stAnterior: r(stAnterior),
+      saldoTecnicoResultante: r(saldoTecnicoResultante),
+      sldAnterior: r(sldAnterior),
+      totalPagosACuenta: r(totalPagosACuenta),
+      impuestoAPagar: r(impuestoAPagar),
+      saldoLibreDisponibilidadResultante: r(saldoLibreDisponibilidadResultante)
     };
   }
 
-  return {
-    calculateIVA
-  };
-})();
+  root.TaxEngine = { calculateIVA, ivaDe, alicuotaDe, alicuotaNormalizada, claseComprobante, sinIVA, ALICUOTAS };
+})(typeof window !== 'undefined' ? window : globalThis);

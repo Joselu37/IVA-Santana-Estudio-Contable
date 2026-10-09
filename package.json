@@ -1,14 +1,18 @@
 {
-  "name": "arca-integration",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "liquidador-iva-santana",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Liquidador de IVA con conexión a ARCA - Santana Estudio Contable",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "test": "node --test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Santana Estudio Contable",
+  "license": "UNLICENSED",
   "dependencies": {
     "fast-xml-parser": "^5.11.0",
     "node-forge": "^1.4.0"
